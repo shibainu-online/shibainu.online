@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Local Hash Generator (SHA-256)</title>
+    <style>
+        body {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Monaco', monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background: #252526;
+            padding: 40px;
+            border-radius: 10px;
+            border: 1px solid #3e3e42;
+            text-align: center;
+            width: 600px;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+        }
+        #drop-zone {
+            border: 2px dashed #555;
+            padding: 40px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        #drop-zone:hover, #drop-zone.dragover {
+            border-color: #007acc;
+            background: #2d2d30;
+        }
+        h1 { margin-top: 0; color: #fff; font-size: 1.2rem; }
+        .result-box {
+            margin-top: 20px;
+            text-align: left;
+        }
+        label { font-size: 0.8rem; color: #888; display: block; margin-bottom: 5px; }
+        input[type="text"] {
+            width: 100%;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            color: #9cdcfe;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 1rem;
+            box-sizing: border-box;
+            border-radius: 4px;
+        }
+        button {
+            margin-top: 10px;
+            padding: 8px 20px;
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        button:active { transform: translateY(1px); }
+        #status { height: 20px; color: #4ec9b0; font-size: 0.9rem; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>SHA-256 Generator (Local Only)</h1>
+    
+    <div id="drop-zone">
+        <p>ここにファイルをドロップ<br>またはクリックして選択</p>
+        <input type="file" id="fileInput" style="display: none;">
+    </div>
+
+    <div class="result-box">
+        <label>File Name:</label>
+        <div id="fileName" style="margin-bottom: 10px; color: #fff;">-</div>
+        
+        <label>SHA-256 Hash:</label>
+        <input type="text" id="hashOutput" readonly onclick="this.select()">
+        
+        <div style="text-align: right;">
+            <button onclick="copyHash()">Copy Hash</button>
+        </div>
+        <div id="status"></div>
+    </div>
+</div>
+
+<script>
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('fileInput');
+    const hashOutput = document.getElementById('hashOutput');
+    const fileNameDisplay = document.getElementById('fileName');
+
+    // クリックでファイル選択
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    // ファイル選択時の処理
+    fileInput.addEventListener('change', (e) => processFile(e.target.files[0]));
+
+    // ドラッグ＆ドロップの処理
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) {
+            processFile(e.dataTransfer.files[0]);
+        }
+    });
+
+    // メイン処理：ハッシュ計算
+    async function processFile(file) {
+        if (!file) return;
+
+        fileNameDisplay.innerText = "Calculating...";
+        hashOutput.value = "";
+
+        try {
+            // ブラウザ標準のCrypto APIを使う（爆速でローカル完結）
+            const arrayBuffer = await file.arrayBuffer();
+            const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+            
+            // バイト配列を16進数文字列に変換
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+            fileNameDisplay.innerText = file.name;
+            hashOutput.value = hashHex;
+            
+            // 自動的にコピー用のボタンにフォーカス
+            document.querySelector("button").focus();
+        } catch (err) {
+            fileNameDisplay.innerText = "Error: " + err.message;
+        }
+    }
+
+    // コピー機能
+    function copyHash() {
+        const hash = hashOutput.value;
+        if (hash) {
+            navigator.clipboard.writeText(hash).then(() => {
+                const status = document.getElementById('status');
+                status.innerText = "Copied to clipboard!";
+                setTimeout(() => status.innerText = "", 2000);
+            });
+        }
+    }
+</script>
+
+</body>
+</html>
