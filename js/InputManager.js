@@ -39,6 +39,7 @@ export class InputManager {
     }
 
     setupEvents() {
+        // --- マウスイベント (PC) ---
         this.canvas.addEventListener('mousedown', (e) => {
             if (!this.isActive) return;
             this.isMouseDown = true;
@@ -52,6 +53,30 @@ export class InputManager {
         });
 
         window.addEventListener('mouseup', () => this.isMouseDown = false);
+        
+        // --- タッチイベント (スマホ) ---
+        this.canvas.addEventListener('touchstart', (e) => {
+            if (!this.isActive) return;
+            // 1本指タッチのみ反応
+            if (e.touches.length > 0) {
+                e.preventDefault(); // スクロール防止
+                this.isMouseDown = true;
+                this.updateMousePos(e.touches[0]); // Touchオブジェクトから座標取得
+                this.performRaycast();
+            }
+        }, { passive: false });
+
+        this.canvas.addEventListener('touchmove', (e) => {
+            if (!this.isActive) return;
+            if (e.touches.length > 0) {
+                e.preventDefault(); // スクロール防止
+                this.updateMousePos(e.touches[0]);
+            }
+        }, { passive: false });
+
+        window.addEventListener('touchend', () => this.isMouseDown = false);
+        
+        // フォーカス外れ対策
         window.addEventListener('blur', () => this.isMouseDown = false);
         window.addEventListener('mouseleave', () => this.isMouseDown = false);
     }
