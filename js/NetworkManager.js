@@ -3,15 +3,12 @@ export class NetworkManager {
         this.dotNetRef = null;
         this.myId = crypto.randomUUID();
         
-        // WebRTC用
         this.peers = {}; 
         this.dataChannels = {};
         
-        // ローカル用
         this.broadcastChannel = null;
 
-        // シグナリングサーバーリスト (初期値)
-        // ★修正: 指定のCGIをデフォルトで登録
+        // シグナリングサーバーリスト
         this.signalingUrls = [
             "https://close-creation.ganjy.net/matching/signaling.php"
         ];
@@ -23,32 +20,36 @@ export class NetworkManager {
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         };
 
-        // 強制ローカルモードフラグ
         this.forceLocal = false;
-        
-        // ポーリング用タイマーID
         this.pollTimer = null;
+        
+        // ★追加: 稼働中フラグ
+        this.isActive = false;
     }
 
     init(dotNetRef) {
         this.dotNetRef = dotNetRef;
-        console.log("[Network] Initialized. My PeerID:", this.myId);
-        this.connect();
+        console.log("[Network] Initialized (Ref updated). My PeerID:", this.myId);
+        
+        // ★重要修正: すでに動いているなら再接続しない (切断防止)
+        if (!this.isActive) {
+            this.connect();
+        } else {
+            console.log("[Network] Already active, skipping reconnection.");
+        }
     }
     
-    // 接続処理 (再接続可能)
     async connect() {
-        // 既存の接続をお掃除
+        // 再接続処理
         this.cleanup();
+        this.isActive = true; // ★稼働開始
 
-        // 強制ローカルモードなら即BroadcastChannel
         if (this.forceLocal) {
             console.warn("[Network] Force Local Mode enabled.");
             this.setupBroadcastChannel();
             return;
         }
         
-        // シグナリングサーバー確認
         const signalingAvailable = await this.checkSignalingServer();
 
         if (signalingAvailable) {
@@ -60,8 +61,9 @@ export class NetworkManager {
         }
     }
     
-    // お掃除
     cleanup() {
+        this.isActive = false; // ★停止
+
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
             this.pollTimer = null;
@@ -71,7 +73,6 @@ export class NetworkManager {
             this.broadcastChannel = null;
         }
         
-        // 既存のピア切断
         for (const id in this.peers) {
             this.peers[id].close();
         }
@@ -79,21 +80,16 @@ export class NetworkManager {
         this.dataChannels = {};
     }
 
-    // URL追加
     addSignalingUrl(url) {
         if (url && !this.signalingUrls.includes(url)) {
-            // 優先度高くするため先頭に追加
             this.signalingUrls.unshift(url);
             console.log("[Network] Added signaling URL:", url);
         }
     }
     
-    // モード設定
     setForceLocal(enabled) {
         this.forceLocal = enabled;
     }
-
-    // ------------------------------------------------------------
 
     onDataReceived(data) {
         if (this.dotNetRef) {
@@ -102,7 +98,6 @@ export class NetworkManager {
     }
 
     broadcast(message) {
-        // WebRTCのピアがいればそちらへ
         const peerIds = Object.keys(this.dataChannels);
         if (peerIds.length > 0) {
             peerIds.forEach(id => {
@@ -112,15 +107,11 @@ export class NetworkManager {
                 }
             });
         }
-        // フォールバック: BroadcastChannelが有効ならそちらへ
         else if (this.broadcastChannel) {
             this.broadcastChannel.postMessage(message);
         }
     }
 
-    // ============================================================
-    //  Local Mode (BroadcastChannel)
-    // ============================================================
     setupBroadcastChannel() {
         this.broadcastChannel = new BroadcastChannel('game_mesh_network');
         this.broadcastChannel.onmessage = (e) => {
@@ -129,16 +120,10 @@ export class NetworkManager {
         console.log("[Network] BroadcastChannel is ready.");
     }
 
-    // ============================================================
-    //  Global Mode (WebRTC + CGI Signaling)
-    // ============================================================
     async checkSignalingServer() {
         if (this.signalingUrls.length === 0) return false;
-
-        // 先頭のURLを試す
         const url = this.signalingUrls[0];
         try {
-            // 疎通確認
             const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(2000) });
             if (res.ok) {
                 this.currentSignalingUrl = url;
@@ -152,29 +137,21 @@ export class NetworkManager {
 
     async startSignalingLoop() {
         if (!this.currentSignalingUrl) return;
-        
-        // 定期ポーリング開始
         this.pollTimer = setInterval(() => this.pollSignalingServer(), 2000);
-        
-        // 参加表明
         this.sendSignal({ type: 'join', sender: this.myId });
     }
 
     async pollSignalingServer() {
         if (!this.currentSignalingUrl) return;
-        
         try {
             const res = await fetch(`${this.currentSignalingUrl}?room=chromamesia_global`);
             if (!res.ok) return;
-            
             const messages = await res.json();
-            
             messages.forEach(msg => {
                 if (msg.time > this.lastMsgTime && msg.sender !== this.myId) {
                     this.handleSignal(msg);
                 }
             });
-            
             if (messages.length > 0) {
                 this.lastMsgTime = Math.max(...messages.map(m => m.time));
             }
