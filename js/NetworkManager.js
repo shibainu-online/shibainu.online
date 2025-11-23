@@ -5,7 +5,6 @@ export class NetworkManager {
         
         this.peers = {}; 
         this.dataChannels = {};
-        
         this.broadcastChannel = null;
 
         // シグナリングサーバーリスト
@@ -23,15 +22,17 @@ export class NetworkManager {
         this.forceLocal = false;
         this.pollTimer = null;
         
-        // ★追加: 稼働中フラグ
         this.isActive = false;
+        
+        // ★追加: 送信待ちメッセージキュー
+        this.messageQueue = [];
     }
 
     init(dotNetRef) {
         this.dotNetRef = dotNetRef;
         console.log("[Network] Initialized (Ref updated). My PeerID:", this.myId);
         
-        // ★重要修正: すでに動いているなら再接続しない (切断防止)
+        // 既に稼働中なら再接続しない
         if (!this.isActive) {
             this.connect();
         } else {
@@ -40,9 +41,8 @@ export class NetworkManager {
     }
     
     async connect() {
-        // 再接続処理
         this.cleanup();
-        this.isActive = true; // ★稼働開始
+        this.isActive = true; 
 
         if (this.forceLocal) {
             console.warn("[Network] Force Local Mode enabled.");
@@ -62,7 +62,7 @@ export class NetworkManager {
     }
     
     cleanup() {
-        this.isActive = false; // ★停止
+        this.isActive = false;
 
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
@@ -78,6 +78,7 @@ export class NetworkManager {
         }
         this.peers = {};
         this.dataChannels = {};
+        this.messageQueue = [];
     }
 
     addSignalingUrl(url) {
@@ -97,18 +98,37 @@ export class NetworkManager {
         }
     }
 
+    // ★修正: 送信ロジック
     broadcast(message) {
         const peerIds = Object.keys(this.dataChannels);
+        let sentCount = 0;
+
+        // WebRTC
         if (peerIds.length > 0) {
             peerIds.forEach(id => {
                 const dc = this.dataChannels[id];
                 if (dc.readyState === 'open') {
                     dc.send(message);
+                    sentCount++;
                 }
             });
         }
+        // Local
         else if (this.broadcastChannel) {
             this.broadcastChannel.postMessage(message);
+            sentCount++;
+        }
+
+        // ★追加: 誰も送る相手がいない場合はキューに保存
+        if (sentCount === 0) {
+            console.log("[Network] No active peers. Queuing message:", message);
+            this.messageQueue.push(message);
+            
+            // 10秒後に自動消滅（永遠に残らないように）
+            setTimeout(() => {
+                const idx = this.messageQueue.indexOf(message);
+                if (idx > -1) this.messageQueue.splice(idx, 1);
+            }, 10000);
         }
     }
 
@@ -171,7 +191,6 @@ export class NetworkManager {
 
     async handleSignal(msg) {
         const targetId = msg.sender;
-
         switch (msg.type) {
             case 'join':
                 if (!this.peers[targetId]) {
@@ -179,21 +198,18 @@ export class NetworkManager {
                     this.connectToPeer(targetId, true); 
                 }
                 break;
-            
             case 'offer':
                 if (msg.target === this.myId) {
                     console.log("[Network] Received offer from:", targetId);
                     this.connectToPeer(targetId, false, msg.sdp);
                 }
                 break;
-
             case 'answer':
                 if (msg.target === this.myId && this.peers[targetId]) {
                     console.log("[Network] Received answer from:", targetId);
                     await this.peers[targetId].setRemoteDescription(new RTCSessionDescription(msg.sdp));
                 }
                 break;
-
             case 'candidate':
                 if (msg.target === this.myId && this.peers[targetId]) {
                     await this.peers[targetId].addIceCandidate(new RTCIceCandidate(msg.candidate));
@@ -204,7 +220,6 @@ export class NetworkManager {
 
     async connectToPeer(peerId, isInitiator, offerSdp = null) {
         if (this.peers[peerId]) return; 
-
         const pc = new RTCPeerConnection(this.rtcConfig);
         this.peers[peerId] = pc;
 
@@ -237,7 +252,19 @@ export class NetworkManager {
 
     setupDataChannel(dc, peerId) {
         this.dataChannels[peerId] = dc;
-        dc.onopen = () => console.log(`[Network] P2P Connected to ${peerId}!`);
+        
+        // ★修正: 接続が開通したら、溜まっていたメッセージを送信する
+        dc.onopen = () => {
+            console.log(`[Network] P2P Connected to ${peerId}!`);
+            
+            if (this.messageQueue.length > 0) {
+                console.log(`[Network] Sending ${this.messageQueue.length} queued messages to ${peerId}`);
+                this.messageQueue.forEach(msg => dc.send(msg));
+                // ※メッセージは消さずに、これから繋がる他の人にも送れるように残しておく
+                // （10秒のタイムアウトで消えるので問題ない）
+            }
+        };
+
         dc.onmessage = (e) => this.onDataReceived(e.data);
         dc.onclose = () => {
             console.log(`[Network] Disconnected from ${peerId}`);
