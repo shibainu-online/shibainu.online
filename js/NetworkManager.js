@@ -3,13 +3,18 @@ export class NetworkManager {
         this.dotNetRef = null;
         this.myId = crypto.randomUUID();
         
+        // WebRTC用
         this.peers = {}; 
         this.dataChannels = {};
-        this.candidateQueue = {}; 
         
+        // ローカル用
         this.broadcastChannel = null;
 
-        this.signalingUrls = [];
+        // シグナリングサーバーリスト (初期値)
+        // ★修正: 指定のCGIをデフォルトで登録
+        this.signalingUrls = [
+            "https://close-creation.ganjy.net/matching/signaling.php"
+        ];
         
         this.currentSignalingUrl = null;
         this.lastMsgTime = 0;
@@ -18,36 +23,32 @@ export class NetworkManager {
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         };
 
+        // 強制ローカルモードフラグ
         this.forceLocal = false;
+        
+        // ポーリング用タイマーID
         this.pollTimer = null;
-
-        // ★追加: 稼働状態フラグ
-        this.isActive = false;
     }
 
     init(dotNetRef) {
         this.dotNetRef = dotNetRef;
-        console.log("[Network] Initialized (Ref updated). My PeerID:", this.myId);
-        
-        // ★修正: すでに稼働中なら再接続しない (切断防止)
-        if (!this.isActive) {
-            this.connect();
-        } else {
-            console.log("[Network] Already active, skipping reconnection.");
-        }
+        console.log("[Network] Initialized. My PeerID:", this.myId);
+        this.connect();
     }
     
+    // 接続処理 (再接続可能)
     async connect() {
-        // ★追加: 再接続時は一度クリーンアップ
+        // 既存の接続をお掃除
         this.cleanup();
-        this.isActive = true; // 稼働開始
 
+        // 強制ローカルモードなら即BroadcastChannel
         if (this.forceLocal) {
             console.warn("[Network] Force Local Mode enabled.");
             this.setupBroadcastChannel();
             return;
         }
         
+        // シグナリングサーバー確認
         const signalingAvailable = await this.checkSignalingServer();
 
         if (signalingAvailable) {
@@ -59,9 +60,8 @@ export class NetworkManager {
         }
     }
     
+    // お掃除
     cleanup() {
-        this.isActive = false; // 停止
-
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
             this.pollTimer = null;
@@ -71,24 +71,29 @@ export class NetworkManager {
             this.broadcastChannel = null;
         }
         
+        // 既存のピア切断
         for (const id in this.peers) {
             this.peers[id].close();
         }
         this.peers = {};
         this.dataChannels = {};
-        this.candidateQueue = {};
     }
 
+    // URL追加
     addSignalingUrl(url) {
         if (url && !this.signalingUrls.includes(url)) {
+            // 優先度高くするため先頭に追加
             this.signalingUrls.unshift(url);
             console.log("[Network] Added signaling URL:", url);
         }
     }
     
+    // モード設定
     setForceLocal(enabled) {
         this.forceLocal = enabled;
     }
+
+    // ------------------------------------------------------------
 
     onDataReceived(data) {
         if (this.dotNetRef) {
@@ -97,7 +102,7 @@ export class NetworkManager {
     }
 
     broadcast(message) {
-        // WebRTC
+        // WebRTCのピアがいればそちらへ
         const peerIds = Object.keys(this.dataChannels);
         if (peerIds.length > 0) {
             peerIds.forEach(id => {
@@ -107,12 +112,15 @@ export class NetworkManager {
                 }
             });
         }
-        // Local
+        // フォールバック: BroadcastChannelが有効ならそちらへ
         else if (this.broadcastChannel) {
             this.broadcastChannel.postMessage(message);
         }
     }
 
+    // ============================================================
+    //  Local Mode (BroadcastChannel)
+    // ============================================================
     setupBroadcastChannel() {
         this.broadcastChannel = new BroadcastChannel('game_mesh_network');
         this.broadcastChannel.onmessage = (e) => {
@@ -121,10 +129,16 @@ export class NetworkManager {
         console.log("[Network] BroadcastChannel is ready.");
     }
 
+    // ============================================================
+    //  Global Mode (WebRTC + CGI Signaling)
+    // ============================================================
     async checkSignalingServer() {
         if (this.signalingUrls.length === 0) return false;
+
+        // 先頭のURLを試す
         const url = this.signalingUrls[0];
         try {
+            // 疎通確認
             const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(2000) });
             if (res.ok) {
                 this.currentSignalingUrl = url;
@@ -138,21 +152,29 @@ export class NetworkManager {
 
     async startSignalingLoop() {
         if (!this.currentSignalingUrl) return;
+        
+        // 定期ポーリング開始
         this.pollTimer = setInterval(() => this.pollSignalingServer(), 2000);
+        
+        // 参加表明
         this.sendSignal({ type: 'join', sender: this.myId });
     }
 
     async pollSignalingServer() {
         if (!this.currentSignalingUrl) return;
+        
         try {
             const res = await fetch(`${this.currentSignalingUrl}?room=chromamesia_global`);
             if (!res.ok) return;
+            
             const messages = await res.json();
+            
             messages.forEach(msg => {
                 if (msg.time > this.lastMsgTime && msg.sender !== this.myId) {
                     this.handleSignal(msg);
                 }
             });
+            
             if (messages.length > 0) {
                 this.lastMsgTime = Math.max(...messages.map(m => m.time));
             }
@@ -192,34 +214,14 @@ export class NetworkManager {
                 if (msg.target === this.myId && this.peers[targetId]) {
                     console.log("[Network] Received answer from:", targetId);
                     await this.peers[targetId].setRemoteDescription(new RTCSessionDescription(msg.sdp));
-                    this.processCandidateQueue(targetId);
                 }
                 break;
 
             case 'candidate':
                 if (msg.target === this.myId && this.peers[targetId]) {
-                    const pc = this.peers[targetId];
-                    if (pc.remoteDescription && pc.remoteDescription.type) {
-                        await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-                    } else {
-                        if (!this.candidateQueue[targetId]) this.candidateQueue[targetId] = [];
-                        this.candidateQueue[targetId].push(msg.candidate);
-                        console.log("[Network] Queued candidate for:", targetId);
-                    }
+                    await this.peers[targetId].addIceCandidate(new RTCIceCandidate(msg.candidate));
                 }
                 break;
-        }
-    }
-
-    async processCandidateQueue(peerId) {
-        const pc = this.peers[peerId];
-        const queue = this.candidateQueue[peerId];
-        if (pc && queue) {
-            for (const candidate of queue) {
-                await pc.addIceCandidate(new RTCIceCandidate(candidate));
-            }
-            console.log(`[Network] Processed ${queue.length} queued candidates for ${peerId}`);
-            delete this.candidateQueue[peerId];
         }
     }
 
@@ -250,8 +252,6 @@ export class NetworkManager {
             this.sendSignal({ type: 'offer', target: peerId, sender: this.myId, sdp: offer });
         } else {
             await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
-            this.processCandidateQueue(peerId);
-
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             this.sendSignal({ type: 'answer', target: peerId, sender: this.myId, sdp: answer });
