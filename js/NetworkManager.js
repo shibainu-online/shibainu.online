@@ -24,8 +24,10 @@ export class NetworkManager {
         
         this.isActive = false;
         
-        // ★追加: 送信待ちメッセージキュー
+        // 送信待ちメッセージキュー
         this.messageQueue = [];
+        // ICE Candidate待ち行列
+        this.candidateQueue = {};
     }
 
     init(dotNetRef) {
@@ -79,6 +81,7 @@ export class NetworkManager {
         this.peers = {};
         this.dataChannels = {};
         this.messageQueue = [];
+        this.candidateQueue = {};
     }
 
     addSignalingUrl(url) {
@@ -98,7 +101,6 @@ export class NetworkManager {
         }
     }
 
-    // ★修正: 送信ロジック
     broadcast(message) {
         const peerIds = Object.keys(this.dataChannels);
         let sentCount = 0;
@@ -119,12 +121,12 @@ export class NetworkManager {
             sentCount++;
         }
 
-        // ★追加: 誰も送る相手がいない場合はキューに保存
+        // 誰も送る相手がいない場合はキューに保存
         if (sentCount === 0) {
-            console.log("[Network] No active peers. Queuing message:", message);
+            // console.log("[Network] No active peers. Queuing message:", message);
             this.messageQueue.push(message);
             
-            // 10秒後に自動消滅（永遠に残らないように）
+            // 10秒後に自動消滅
             setTimeout(() => {
                 const idx = this.messageQueue.indexOf(message);
                 if (idx > -1) this.messageQueue.splice(idx, 1);
@@ -208,13 +210,40 @@ export class NetworkManager {
                 if (msg.target === this.myId && this.peers[targetId]) {
                     console.log("[Network] Received answer from:", targetId);
                     await this.peers[targetId].setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                    this.processCandidateQueue(targetId);
                 }
                 break;
             case 'candidate':
                 if (msg.target === this.myId && this.peers[targetId]) {
-                    await this.peers[targetId].addIceCandidate(new RTCIceCandidate(msg.candidate));
+                    const pc = this.peers[targetId];
+                    // ★修正: addIceCandidateのエラーをキャッチしてキューに入れる (タイミング問題回避)
+                    try {
+                        if (pc.remoteDescription && pc.remoteDescription.type) {
+                            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+                        } else {
+                            throw new Error("Remote description not ready");
+                        }
+                    } catch (e) {
+                        // エラーならキューへ
+                        if (!this.candidateQueue[targetId]) this.candidateQueue[targetId] = [];
+                        this.candidateQueue[targetId].push(msg.candidate);
+                    }
                 }
                 break;
+        }
+    }
+
+    async processCandidateQueue(peerId) {
+        const pc = this.peers[peerId];
+        const queue = this.candidateQueue[peerId];
+        if (pc && queue) {
+            for (const candidate of queue) {
+                try {
+                    await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch(e) {}
+            }
+            console.log(`[Network] Processed ${queue.length} queued candidates for ${peerId}`);
+            delete this.candidateQueue[peerId];
         }
     }
 
@@ -244,6 +273,8 @@ export class NetworkManager {
             this.sendSignal({ type: 'offer', target: peerId, sender: this.myId, sdp: offer });
         } else {
             await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
+            this.processCandidateQueue(peerId); // Offerセット直後にもキュー処理を試みる
+
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             this.sendSignal({ type: 'answer', target: peerId, sender: this.myId, sdp: answer });
@@ -253,15 +284,12 @@ export class NetworkManager {
     setupDataChannel(dc, peerId) {
         this.dataChannels[peerId] = dc;
         
-        // ★修正: 接続が開通したら、溜まっていたメッセージを送信する
         dc.onopen = () => {
             console.log(`[Network] P2P Connected to ${peerId}!`);
             
             if (this.messageQueue.length > 0) {
                 console.log(`[Network] Sending ${this.messageQueue.length} queued messages to ${peerId}`);
                 this.messageQueue.forEach(msg => dc.send(msg));
-                // ※メッセージは消さずに、これから繋がる他の人にも送れるように残しておく
-                // （10秒のタイムアウトで消えるので問題ない）
             }
         };
 
