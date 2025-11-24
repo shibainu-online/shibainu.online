@@ -15,7 +15,6 @@ let placementYOffset = 0;
 let placementRotation = 0;
 
 const GRID_SIZE = 32;
-// 論理座標（入力判定用）
 const playerPos = { x: 0, y: 0, z: 0 };
 
 let localPlayerId = "";
@@ -69,7 +68,6 @@ async function initGame() {
         if (e.key === 'ArrowRight') placementRotation -= 0.1;
     });
 
-    // 50ms間隔で現在地を報告 (クライアント主導)
     setInterval(reportPositionToCSharp, 50);
     animate();
 }
@@ -82,7 +80,6 @@ function animate() {
         inputManager.update();
 
         if (!isPlacementMode) {
-            // ★ファイナル版ロジック復活: 自キャラをローカルで動かす
             updateLocalPlayerMovement(delta);
             checkCollisions();
         } 
@@ -103,7 +100,6 @@ function animate() {
     renderer.render(scene, camera);
 }
 
-// ★復活: ローカル移動ロジック (滑らかなMoveTowards)
 function updateLocalPlayerMovement(delta) {
     const myMesh = visualEntityManager.entities[localPlayerId];
     if (!myMesh) return;
@@ -117,7 +113,6 @@ function updateLocalPlayerMovement(delta) {
             const speedParam = inputManager.moveSpeed || 300;
             const visualSpeed = speedParam / 30.0; 
             const maxMove = visualSpeed * delta;
-
             const dir = new THREE.Vector3().subVectors(target, currentPos).normalize();
             myMesh.position.add(dir.multiplyScalar(maxMove));
         }
@@ -135,7 +130,6 @@ function updateLocalPlayerMovement(delta) {
     visualEntityManager.updateGridPosition(myMesh, playerPos.x, playerPos.z);
 }
 
-// ★復活: C#への現在地報告 (GameLogic.UpdateMyPositionへ)
 function reportPositionToCSharp() {
     if (isGameActive && !isPlacementMode && gameLogicRef) {
         gameLogicRef.invokeMethodAsync('UpdateMyPosition', playerPos.x, playerPos.y, playerPos.z);
@@ -197,7 +191,6 @@ window.initNetwork = (ref) => {
     networkManager.init(ref); 
 };
 
-// ★追加: 新機能のネットワーク設定
 window.NetworkInterop = {
     addSignalingUrl: (url) => { if (networkManager) networkManager.addSignalingUrl(url); },
     setForceLocal: (enabled) => { if (networkManager) networkManager.setForceLocal(enabled); },
@@ -219,19 +212,15 @@ window.StartGame = (logicRef, id, name, x, y, z, speed, colorHex, isVisible) => 
     if (cameraLookAt) cameraLookAt.set(x, 0, z);
     if (minimapManager) minimapManager.show();
 
-    // ★重要: setLocalPlayerId を呼ぶ (これによりVisualEntityManagerでの二重移動を防ぐ)
     visualEntityManager.setLocalPlayerId(id);
     visualEntityManager.updateEntity(id, x, y, z, colorHex, name, "Player", 0, true, speed);
 
     updateVisuals();
 };
 
-// 同期用（ワープのみ対応し、普段は無視する）
 window.SyncLocalPosition = (x, y, z) => {
     const dist = Math.sqrt(Math.pow(x - playerPos.x, 2) + Math.pow(z - playerPos.z, 2));
-    if (dist > 5.0) {
-        WarpLocalPlayer(x, y, z);
-    }
+    if (dist > 5.0) WarpLocalPlayer(x, y, z);
 };
 
 window.renderBox = (hex) => { 
@@ -242,7 +231,6 @@ window.SetPlayerSpeed = (speed) => { if (inputManager) inputManager.setSpeed(spe
 window.TerrainInterop = { loadChunk: (gx, gz, heightMap) => terrainManager.loadChunk(gx, gz, heightMap) };
 window.VisualEntityInterop = {
     updateEntity: (id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed) => { 
-        // ★重要: 自分自身の更新はスキップ (Main.jsで制御しているため)
         if (id === localPlayerId) return; 
         if(visualEntityManager) visualEntityManager.updateEntity(id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed); 
     },
@@ -255,7 +243,57 @@ window.StartPlacementMode = (id) => { isPlacementMode = true; placementTargetMes
 window.EndPlacementMode = () => { isPlacementMode = false; let result = null; if (placementTargetMesh) { result = [ placementTargetMesh.position.x, placementTargetMesh.position.y, placementTargetMesh.position.z, placementTargetMesh.rotation.y ]; } placementTargetMesh = null; return result; };
 window.ToggleNamePlates = () => { if(!visualEntityManager) return; const visible = visualEntityManager.toggleNamePlates(); if(visualEntityManager.entities) for(let id in visualEntityManager.entities) { let mesh = visualEntityManager.entities[id]; mesh.children.forEach(c => { if(c.isSprite) c.visible = visible; }); } }; 
 window.broadcastMessage = (m) => networkManager.broadcast(m);
-window.verifyMasterKey = (p, pub) => networkManager.verifyMasterKey(p, pub);
+
+// 暗号化Interop
+window.CryptoInterop = {
+    generateKeys: async () => {
+        const keyPair = await window.crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+        const priv = await window.crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+        const pub = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
+        return { privateKey: toPem(priv, "PRIVATE KEY"), publicKey: toPem(pub, "PUBLIC KEY") };
+    },
+    getPublicKeyFromPrivate: async (privPem) => {
+        try {
+            const privBuf = pemToBuffer(privPem);
+            const key = await window.crypto.subtle.importKey("pkcs8", privBuf, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["sign"]);
+            const jwk = await window.crypto.subtle.exportKey("jwk", key);
+            delete jwk.d; delete jwk.p; delete jwk.q; delete jwk.dp; delete jwk.dq; delete jwk.qi; jwk.key_ops = ["verify"];
+            const pubKey = await window.crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["verify"]);
+            const pubBuf = await window.crypto.subtle.exportKey("spki", pubKey);
+            return toPem(pubBuf, "PUBLIC KEY");
+        } catch (e) { return ""; }
+    },
+    signData: async (data, privPem) => {
+        try {
+            const privBuf = pemToBuffer(privPem);
+            const key = await window.crypto.subtle.importKey("pkcs8", privBuf, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+            const enc = new TextEncoder();
+            const signature = await window.crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, enc.encode(data));
+            return arrayBufferToBase64(signature);
+        } catch (e) { return ""; }
+    },
+    verifyData: async (data, signatureBase64, pubPem) => {
+        try {
+            const pubBuf = pemToBuffer(pubPem);
+            const key = await window.crypto.subtle.importKey("spki", pubBuf, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+            const enc = new TextEncoder();
+            const sigBuf = base64ToArrayBuffer(signatureBase64);
+            return await window.crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, sigBuf, enc.encode(data));
+        } catch (e) { return false; }
+    }
+};
+
+// ★追加: クリップボードコピーInterop
+window.ClipboardInterop = {
+    copyText: (text) => {
+        navigator.clipboard.writeText(text).then(function() {}, function(err) {});
+    }
+};
+
+function toPem(buffer, label) { const b64 = arrayBufferToBase64(buffer); return `-----BEGIN ${label}-----\n${b64}\n-----END ${label}-----`; }
+function pemToBuffer(pem) { const b64 = pem.replace(/-----BEGIN [^-]+-----/, '').replace(/-----END [^-]+-----/, '').replace(/\s/g, ''); return base64ToArrayBuffer(b64); }
+function arrayBufferToBase64(buffer) { let binary = ''; const bytes = new Uint8Array(buffer); for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]); return window.btoa(binary); }
+function base64ToArrayBuffer(base64) { const binary_string = window.atob(base64); const len = binary_string.length; const bytes = new Uint8Array(len); for (let i = 0; i < len; i++) bytes[i] = binary_string.charCodeAt(i); return bytes.buffer; }
 
 async function loadThreeJs() {
     let scriptSrc = 'three.module.js';

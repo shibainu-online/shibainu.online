@@ -5,10 +5,9 @@ export class VisualEntityManager {
         this.entities = {}; 
         this.showNamePlates = true;
         this.gridMap = {};
-        this.localPlayerId = null; // ★追加
+        this.localPlayerId = null;
     }
 
-    // ★追加: ローカルプレイヤーIDを設定
     setLocalPlayerId(id) {
         this.localPlayerId = id;
     }
@@ -38,6 +37,9 @@ export class VisualEntityManager {
 
             const label = this.createLabel(name);
             mesh.add(label);
+            
+            // 初期可視性
+            mesh.visible = isVisible;
 
             this.scene.add(mesh);
             this.entities[id] = mesh;
@@ -47,11 +49,11 @@ export class VisualEntityManager {
         
         const currentMesh = this.entities[id];
         
-        // ターゲット更新
         if (!currentMesh.userData.targetPos) currentMesh.userData.targetPos = new THREE.Vector3();
         currentMesh.userData.targetPos.set(x, y, z);
         currentMesh.rotation.y = rotationY;
         
+        // 常に最新の可視性を適用
         currentMesh.visible = isVisible;
         currentMesh.userData.moveSpeed = moveSpeed;
 
@@ -100,7 +102,7 @@ export class VisualEntityManager {
 
     animate(delta) {
         for (const id in this.entities) {
-            // ★重要修正: 自分自身は自動移動させない (Main.jsで制御する)
+            // 自キャラはMain.jsで動かすので無視
             if (id === this.localPlayerId) continue;
 
             const entity = this.entities[id];
@@ -113,8 +115,9 @@ export class VisualEntityManager {
                 entity.position.copy(target);
                 this.updateGridPosition(entity, target.x, target.z);
             } else if (dist > 0.001) {
+                // 等速移動 (他キャラ用)
                 const speedParam = entity.userData.moveSpeed || 300;
-                const visualSpeed = speedParam / 20.0; 
+                const visualSpeed = speedParam / 30.0; 
                 const maxMove = visualSpeed * delta * 1.1;
 
                 if (dist <= maxMove) {
