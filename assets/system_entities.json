@@ -1,0 +1,57 @@
+[
+  {
+    "Id": "88888888-8888-8888-8888-888888888888",
+    "OwnerId": "SYSTEM",
+    "Type": "Item",
+    "Name": "Apple",
+    "ColorHex": "#ff0000",
+    "X": 0,
+    "Y": -100,
+    "Z": 0,
+    "RotationY": 0,
+    "IsStatic": true,
+    "IsDeleted": true,
+    "IsEnabled": false,
+    "MoveSpeed": 0,
+    "MaxStamina": 0,
+    "Stamina": 0,
+    "MaxStomach": 0,
+    "Stomach": 0,
+    "Attributes": {
+      "Nutrition": "40",
+      "IsTemplate": "true"
+    },
+    "ChunkId": "",
+    "Timestamp": 0,
+    "PublicKey": "",
+    "Signature": "",
+    "Status": 0
+  },
+  {
+    "Id": "99999999-9999-9999-9999-999999999999",
+    "OwnerId": "SYSTEM",
+    "Type": "PlayerTemplate",
+    "Name": "PlayerDefault",
+    "ColorHex": "#ffffff",
+    "X": 0,
+    "Y": -100,
+    "Z": 0,
+    "RotationY": 0,
+    "IsStatic": false,
+    "IsDeleted": true,
+    "IsEnabled": false,
+    "MoveSpeed": 300,
+    "MaxStamina": 200,
+    "Stamina": 200,
+    "MaxStomach": 200,
+    "Stomach": 200,
+    "Attributes": {
+      "IsTemplate": "true"
+    },
+    "ChunkId": "",
+    "Timestamp": 0,
+    "PublicKey": "",
+    "Signature": "",
+    "Status": 0
+  }
+]

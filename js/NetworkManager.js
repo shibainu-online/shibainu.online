@@ -24,10 +24,12 @@ export class NetworkManager {
         
         this.isActive = false;
         
-        // 送信待ちメッセージキュー
         this.messageQueue = [];
-        // ICE Candidate待ち行列
         this.candidateQueue = {};
+        
+        // リトライ用
+        this.retryCount = 0;
+        this.maxRetries = 20; // 20回試行 (約40秒)
     }
 
     init(dotNetRef) {
@@ -47,25 +49,57 @@ export class NetworkManager {
         this.isActive = true; 
 
         if (this.forceLocal) {
-            console.warn("[Network] Force Local Mode enabled.");
+            console.warn("[Network] Force Local Mode enabled via UI.");
             this.setupBroadcastChannel();
             return;
         }
         
-        const signalingAvailable = await this.checkSignalingServer();
+        console.log("[Network] Attempting to connect to signaling server...");
+        const signalingUrl = await this.findSignalingServerWithRetry();
 
-        if (signalingAvailable) {
-            console.log("[Network] Global Mode: Signaling server found. Starting WebRTC.");
+        if (signalingUrl) {
+            this.currentSignalingUrl = signalingUrl;
+            console.log("[Network] Global Mode: Connected to", signalingUrl);
             this.startSignalingLoop();
         } else {
-            console.warn("[Network] Local Mode: Signaling server not found. Fallback to BroadcastChannel.");
+            console.warn("[Network] Connection Failed after retries. Fallback to BroadcastChannel (Local Mode).");
             this.setupBroadcastChannel();
         }
     }
     
-    cleanup() {
-        this.isActive = false;
+    // リトライ付きでサーバーを探す
+    async findSignalingServerWithRetry() {
+        this.retryCount = 0;
+        
+        while (this.retryCount < this.maxRetries && this.isActive) {
+            // UIで強制ローカルに切り替えられたら中断
+            if (this.forceLocal) return null;
 
+            const url = this.signalingUrls[this.retryCount % this.signalingUrls.length];
+            console.log(`[Network] Connecting to ${url} (Attempt ${this.retryCount + 1}/${this.maxRetries})...`);
+            
+            try {
+                const controller = new AbortController();
+                const id = setTimeout(() => controller.abort(), 2000); // 2秒タイムアウト
+                
+                const res = await fetch(url, { method: 'GET', signal: controller.signal });
+                clearTimeout(id);
+                
+                if (res.ok) {
+                    return url; // 成功したらそのURLを返す
+                }
+            } catch (e) {
+                // タイムアウトやエラーは無視して次へ
+            }
+            
+            this.retryCount++;
+            // 少し待ってから次へ
+            await new Promise(r => setTimeout(r, 200));
+        }
+        return null;
+    }
+    
+    cleanup() {
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
             this.pollTimer = null;
@@ -123,10 +157,7 @@ export class NetworkManager {
 
         // 誰も送る相手がいない場合はキューに保存
         if (sentCount === 0) {
-            // console.log("[Network] No active peers. Queuing message:", message);
             this.messageQueue.push(message);
-            
-            // 10秒後に自動消滅
             setTimeout(() => {
                 const idx = this.messageQueue.indexOf(message);
                 if (idx > -1) this.messageQueue.splice(idx, 1);
@@ -140,21 +171,6 @@ export class NetworkManager {
             this.onDataReceived(e.data);
         };
         console.log("[Network] BroadcastChannel is ready.");
-    }
-
-    async checkSignalingServer() {
-        if (this.signalingUrls.length === 0) return false;
-        const url = this.signalingUrls[0];
-        try {
-            const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(2000) });
-            if (res.ok) {
-                this.currentSignalingUrl = url;
-                return true;
-            }
-        } catch (e) {
-            console.log(`[Network] Signaling check failed for ${url}:`, e);
-        }
-        return false;
     }
 
     async startSignalingLoop() {
@@ -192,31 +208,43 @@ export class NetworkManager {
     }
 
     async handleSignal(msg) {
+        if (msg.sender === this.myId) return;
         const targetId = msg.sender;
+        
         switch (msg.type) {
             case 'join':
                 if (!this.peers[targetId]) {
-                    console.log("[Network] Found peer (via CGI):", targetId);
-                    this.connectToPeer(targetId, true); 
+                    // ★修正: 通信の衝突(Glare)を防ぐため、IDが小さい方だけが発信するルールにする
+                    if (this.myId < targetId) {
+                        console.log(`[Network] Found peer ${targetId}. Initiating connection (MyID < TargetID).`);
+                        this.connectToPeer(targetId, true); 
+                    } else {
+                        // ★追加: IDが大きい場合、相手(小さい方)は自分の古いJoinを見ていない可能性がある
+                        // そのため、もう一度Joinを送って存在をアピールする
+                        console.log(`[Network] Found peer ${targetId}. Waiting for Offer (MyID > TargetID). Re-sending Join.`);
+                        this.sendSignal({ type: 'join', sender: this.myId });
+                    }
                 }
                 break;
             case 'offer':
                 if (msg.target === this.myId) {
                     console.log("[Network] Received offer from:", targetId);
+                    // Offerが来たら（自分がInitiatorかどうかに関わらず）受ける
                     this.connectToPeer(targetId, false, msg.sdp);
                 }
                 break;
             case 'answer':
                 if (msg.target === this.myId && this.peers[targetId]) {
                     console.log("[Network] Received answer from:", targetId);
-                    await this.peers[targetId].setRemoteDescription(new RTCSessionDescription(msg.sdp));
-                    this.processCandidateQueue(targetId);
+                    try {
+                        await this.peers[targetId].setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                        this.processCandidateQueue(targetId);
+                    } catch (e) { console.error("SetRemoteDesc Error:", e); }
                 }
                 break;
             case 'candidate':
                 if (msg.target === this.myId && this.peers[targetId]) {
                     const pc = this.peers[targetId];
-                    // ★修正: addIceCandidateのエラーをキャッチしてキューに入れる (タイミング問題回避)
                     try {
                         if (pc.remoteDescription && pc.remoteDescription.type) {
                             await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
@@ -224,7 +252,6 @@ export class NetworkManager {
                             throw new Error("Remote description not ready");
                         }
                     } catch (e) {
-                        // エラーならキューへ
                         if (!this.candidateQueue[targetId]) this.candidateQueue[targetId] = [];
                         this.candidateQueue[targetId].push(msg.candidate);
                     }
@@ -242,7 +269,6 @@ export class NetworkManager {
                     await pc.addIceCandidate(new RTCIceCandidate(candidate));
                 } catch(e) {}
             }
-            console.log(`[Network] Processed ${queue.length} queued candidates for ${peerId}`);
             delete this.candidateQueue[peerId];
         }
     }
@@ -273,7 +299,7 @@ export class NetworkManager {
             this.sendSignal({ type: 'offer', target: peerId, sender: this.myId, sdp: offer });
         } else {
             await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
-            this.processCandidateQueue(peerId); // Offerセット直後にもキュー処理を試みる
+            this.processCandidateQueue(peerId);
 
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
@@ -285,8 +311,7 @@ export class NetworkManager {
         this.dataChannels[peerId] = dc;
         
         dc.onopen = () => {
-            console.log(`[Network] P2P Connected to ${peerId}!`);
-            
+            console.log(`[Network] P2P Connected to ${peerId}! (DataChannel Open)`);
             if (this.messageQueue.length > 0) {
                 console.log(`[Network] Sending ${this.messageQueue.length} queued messages to ${peerId}`);
                 this.messageQueue.forEach(msg => dc.send(msg));
