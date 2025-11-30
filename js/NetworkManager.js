@@ -31,15 +31,22 @@ export class NetworkManager {
 
         this.retryCount = 0;
         this.maxRetries = 20;
+        
+        // --- Swarm State ---
+        this.activeRequests = {}; // { hash: { timestamp, chunks: [] } }
     }
 
-    init(dotNetRef, networkId) {
+    init(dotNetRef, networkId, config) {
         this.dotNetRef = dotNetRef;
         
         let networkChanged = false;
         if (networkId && this.networkId !== networkId) {
             this.networkId = networkId;
             networkChanged = true;
+        }
+        
+        if (config && config.signalingUrls) {
+            this.signalingUrls = config.signalingUrls;
         }
         
         console.log(`[Network] Initialized. ID: ${this.myId}, Network: ${this.networkId}`);
@@ -114,6 +121,13 @@ export class NetworkManager {
     setForceLocal(enabled) { this.forceLocal = enabled; }
 
     onDataReceived(data) {
+        // ★重要: アセット転送パケットのインターセプト
+        // C#には渡さず、ここで処理して負荷を下げる
+        if (data.startsWith("CMD_ASSET_")) {
+            this.handleAssetMessage(data);
+            return;
+        }
+
         if (this.dotNetRef) {
             this.dotNetRef.invokeMethodAsync('OnMessageReceived', data);
         }
@@ -291,5 +305,88 @@ export class NetworkManager {
             delete this.peers[peerId];
             delete this.dataChannels[peerId];
         };
+    }
+
+    // --- P2P Asset Swarm Implementation ---
+
+    requestAsset(hash) {
+        if (!window.assetManager) return;
+        
+        // 重複リクエスト防止（タイムアウト5秒）
+        if (this.activeRequests[hash] && (Date.now() - this.activeRequests[hash].timestamp < 5000)) return;
+        
+        this.activeRequests[hash] = { timestamp: Date.now() };
+        console.log(`[Swarm] Broadcasting Manifest Request for: ${hash.substr(0,8)}...`);
+        this.broadcast(`CMD_ASSET_REQ_MANIFEST:${hash}`);
+    }
+
+    async handleAssetMessage(msg) {
+        const parts = msg.split(':');
+        const cmd = parts[0];
+        const hash = parts[1];
+
+        if (cmd === "CMD_ASSET_REQ_MANIFEST") {
+            // 他の人がマニフェスト（ファイル情報）を求めている
+            // 自分が持っていれば教えてあげる
+            if (window.assetManager) {
+                const meta = await window.assetManager.getAssetMetadata(hash);
+                if (meta) {
+                    // console.log(`[Swarm] Serving Manifest for ${hash.substr(0,8)}...`);
+                    this.broadcast(`CMD_ASSET_MANIFEST_RESP:${hash}:${meta.chunkCount}`);
+                }
+            }
+        }
+        else if (cmd === "CMD_ASSET_MANIFEST_RESP") {
+            // マニフェスト情報が届いた
+            // まだ持っていないなら、ダウンロードを開始する
+            const count = parseInt(parts[2]);
+            if (!window.assetManager) return;
+
+            const hasIt = await window.assetManager.hasAsset(hash);
+            if (!hasIt) {
+                // ダウンロード開始（ランダムなピアにチャンクを要求）
+                // 本来は持っているピアを管理すべきだが、簡易実装としてブロードキャストで要求する
+                // console.log(`[Swarm] Starting download for ${hash} (${count} chunks)`);
+                this.startDownloadingChunks(hash, count);
+            }
+        }
+        else if (cmd === "CMD_ASSET_REQ_CHUNK") {
+            // チャンクデータを要求された
+            const index = parseInt(parts[2]);
+            if (window.assetManager) {
+                const chunkData = await window.assetManager.getChunk(hash, index);
+                if (chunkData) {
+                    // console.log(`[Swarm] Serving Chunk ${index} of ${hash.substr(0,8)}...`);
+                    this.broadcast(`CMD_ASSET_CHUNK_DATA:${hash}:${index}:${parts[3]}:${chunkData}`); // parts[3] is total count
+                }
+            }
+        }
+        else if (cmd === "CMD_ASSET_CHUNK_DATA") {
+            // チャンクデータが届いた
+            const index = parseInt(parts[2]);
+            const total = parseInt(parts[3]);
+            const data = parts[4]; // Base64 data
+            
+            if (window.assetManager) {
+                window.assetManager.receiveChunk(hash, index, total, data);
+            }
+        }
+    }
+
+    startDownloadingChunks(hash, count) {
+        // 並列ダウンロード
+        // 負荷分散のため、ランダムな順序で要求を投げる（簡易実装）
+        // タイミングをずらしてブロードキャストする
+        
+        const indices = Array.from({length: count}, (_, i) => i);
+        // シャッフル
+        indices.sort(() => Math.random() - 0.5);
+
+        indices.forEach((index, i) => {
+            setTimeout(() => {
+                // console.log(`[Swarm] Requesting chunk ${index}/${count}`);
+                this.broadcast(`CMD_ASSET_REQ_CHUNK:${hash}:${index}:${count}`);
+            }, i * 50); // 50ms間隔でリクエスト発射
+        });
     }
 }

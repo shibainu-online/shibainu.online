@@ -295,7 +295,6 @@ export class GameEngine {
         }
 
         if (this.minimapManager) {
-            // MinimapManager側にもdisposeがあれば呼ぶが、今はDOM削除のみ
             if (this.minimapManager.canvas && this.minimapManager.canvas.parentNode) {
                 this.minimapManager.canvas.parentNode.removeChild(this.minimapManager.canvas);
             }
@@ -311,7 +310,6 @@ export class GameEngine {
         }
 
         if (this.scene) {
-            // メッシュ等の再帰的破棄はVisualEntityManager等に任せるか、ここでやる
             this.scene = null;
         }
 

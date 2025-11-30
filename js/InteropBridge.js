@@ -7,8 +7,8 @@ export class InteropBridge {
     }
 
     setupExports() {
-        window.initNetwork = (ref, networkId) => {
-            if (window.networkManager) window.networkManager.init(ref, networkId);
+        window.initNetwork = (ref, networkId, config) => {
+            if (window.networkManager) window.networkManager.init(ref, networkId, config);
         };
 
         window.StartGame = (logicRef, id, name, x, y, z, speed, colorHex, isVisible) => {
@@ -17,7 +17,6 @@ export class InteropBridge {
             }
         };
         
-        // ★追加: 破棄用API
         window.DisposeGame = () => {
             if (this.gameEngine) {
                 this.gameEngine.dispose();

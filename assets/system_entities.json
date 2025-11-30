@@ -33,7 +33,8 @@
     "LocalRotZ": 0,
     "LocalScale": 1,
     "Attributes": {
-      "IsVisible": "false"
+      "IsVisible": "false",
+      "IsTemplate": "true"
     },
     "ActionRules": [],
     "ParentId": "",
@@ -74,7 +75,8 @@
     "LocalRotZ": 0,
     "LocalScale": 1,
     "Attributes": {
-      "Nutrition": "40"
+      "Nutrition": "40",
+      "IsTemplate": "true"
     },
     "ActionRules": [],
     "ParentId": "",
@@ -115,7 +117,8 @@
     "LocalRotZ": 0,
     "LocalScale": 1,
     "Attributes": {
-      "Nutrition": "40"
+      "Nutrition": "40",
+      "IsTemplate": "true"
     },
     "ActionRules": [],
     "ParentId": "",

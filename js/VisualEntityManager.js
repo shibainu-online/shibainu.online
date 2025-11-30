@@ -115,40 +115,62 @@ export class VisualEntityManager {
         try {
             let base64 = null;
             
-            // ★修正: LocalStorageフォールバックを削除し、IndexedDB一本化
             if (window.assetManager) {
                 base64 = await window.assetManager.loadAsset(hash);
-            } else {
-                console.warn("[Visual] AssetManager not ready.");
             }
 
             if (base64) {
-                const bin = atob(base64);
-                const len = bin.length;
-                const bytes = new Uint8Array(len);
-                for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
-
-                const blob = new Blob([bytes.buffer], { type: 'model/gltf-binary' });
-                const url = URL.createObjectURL(blob);
-
-                const gltf = await this.gltfLoader.loadAsync(url);
-                this.modelCache[hash] = gltf.scene;
-
-                URL.revokeObjectURL(url);
-
-                const pending = this.pendingModelApplies[hash];
-                if (pending) {
-                    pending.forEach(ent => {
-                        if (ent.userData.currentModelId === hash) {
-                            this.attachModelFromCache(ent, hash);
-                        }
-                    });
-                }
+                // ローカルDBにあった場合 -> ロード
+                this.processGlbData(hash, base64);
             } else {
-                console.warn(`[Visual] Asset not found in DB: ${hash}`);
+                // DBにない場合 -> P2Pスワームにリクエストを投げる
+                console.warn(`[Visual] Asset missing: ${hash}. Requesting via P2P Swarm...`);
+                if (window.networkManager) {
+                    window.networkManager.requestAsset(hash);
+                }
             }
         } catch (e) {
             console.error("Model load failed:", e);
+            delete this.loadingAssets[hash];
+        }
+    }
+
+    // P2P経由などでデータが届いたときに呼ばれるコールバック
+    async onAssetAvailable(hash) {
+        console.log(`[Visual] Asset became available: ${hash}. Processing pending entities...`);
+        if (window.assetManager) {
+            const base64 = await window.assetManager.loadAsset(hash);
+            if (base64) {
+                this.processGlbData(hash, base64);
+            }
+        }
+    }
+
+    async processGlbData(hash, base64) {
+        try {
+            const bin = atob(base64);
+            const len = bin.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+
+            const blob = new Blob([bytes.buffer], { type: 'model/gltf-binary' });
+            const url = URL.createObjectURL(blob);
+
+            const gltf = await this.gltfLoader.loadAsync(url);
+            this.modelCache[hash] = gltf.scene;
+
+            URL.revokeObjectURL(url);
+
+            const pending = this.pendingModelApplies[hash];
+            if (pending) {
+                pending.forEach(ent => {
+                    if (ent.userData.currentModelId === hash) {
+                        this.attachModelFromCache(ent, hash);
+                    }
+                });
+            }
+        } catch(e) {
+            console.error(`[Visual] Failed to parse GLB ${hash}:`, e);
         } finally {
             delete this.loadingAssets[hash];
             delete this.pendingModelApplies[hash];

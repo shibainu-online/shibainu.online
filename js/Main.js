@@ -2,14 +2,19 @@ import { GameEngine } from './GameEngine.js';
 import { NetworkManager } from './NetworkManager.js';
 import { InteropBridge } from './InteropBridge.js';
 import './NetworkInterop.js';
+// ★追加: AssetManagerを読み込み、window.assetManager を有効化する
+import './AssetManager.js';
 
-console.log("[Main] Loading Main.js (Genesis Fix / External Server / RenderBox Fix)");
+console.log("[Main] Loading Main.js (Genesis Fix / External Server / RenderBox Fix / Interop Update / AssetManager)");
 
+// Initialize Global Managers
 window.gameEngine = new GameEngine();
 window.networkManager = new NetworkManager();
 
+// Setup Interop Bridge (This ensures exports are ready for C#)
 const bridge = new InteropBridge(window.gameEngine);
 
+// Global Reset Logic
 const handleGenesisRequest = (reason) => {
     console.warn(`[Main] System requested action. Reason: ${reason}`);
 
@@ -43,6 +48,7 @@ if (window.NetworkInterop) {
 }
 window.restart = handleGenesisRequest;
 
+// Bootstrap
 export function bootstrap() {
     console.log("[Main] Initializing Game Engine...");
     try {
