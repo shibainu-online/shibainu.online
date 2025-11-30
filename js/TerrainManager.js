@@ -1,19 +1,49 @@
+import * as THREE from 'three';
+
 export class TerrainManager {
     constructor(scene, gridSize) {
         this.scene = scene;
-        this.gridSize = gridSize;
+        this.gridSize = gridSize || 32;
         this.chunks = {}; 
-        this.chunkData = {}; 
+        this.chunkData = {}; // 高さデータのキャッシュ
         
+        // ★修正: ゼブラ影（Shadow Acne）対策のためフラットシェーディングを有効化
         this.material = new THREE.MeshStandardMaterial({ 
             color: 0x55aa55, 
-            // ★修正: スムーズシェーディングにしてゼブラ柄を解消
-            flatShading: false, 
-            roughness: 0.8 
+            flatShading: true, 
+            roughness: 0.8,
+            metalness: 0.1,
+            side: THREE.DoubleSide // 裏面も念のため描画
         });
+
+        this.createBaseGround();
+    }
+
+    createBaseGround() {
+        const planeGeometry = new THREE.PlaneGeometry(2000, 2000);
+        const planeMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x55aa55,
+            roughness: 0.9,
+            metalness: 0.1 
+        });
+        this.baseGround = new THREE.Mesh(planeGeometry, planeMaterial);
+        this.baseGround.rotation.x = -Math.PI / 2;
+        this.baseGround.position.y = -0.1;
+        this.baseGround.receiveShadow = true;
+        this.scene.add(this.baseGround);
+
+        // グリッドヘルパー（開発用）
+        // const gridHelper = new THREE.GridHelper(2000, 200);
+        // gridHelper.position.y = -0.05;
+        // this.scene.add(gridHelper);
     }
 
     loadChunk(gx, gz, heightMap) {
+        // チャンクがロードされたら初期平面を隠す
+        if (this.baseGround && this.baseGround.visible) {
+            this.baseGround.visible = false;
+        }
+
         const key = `${gx}_${gz}`;
         this.chunkData[key] = heightMap;
 
@@ -29,61 +59,80 @@ export class TerrainManager {
 
         const positions = geometry.attributes.position.array;
         
-        // スタッガード・グリッド
+        // ★修正: スタッガード・グリッド（ダイヤ型配置）の形成
+        // 頂点を走査し、Z行が奇数の場合にX座標を0.5ずらす
         for (let i = 0; i < positions.length / 3; i++) {
-            const x = positions[i * 3];
+            // i番目の頂点
+            // positions[i*3]   = x
+            // positions[i*3+1] = y (高さ)
+            // positions[i*3+2] = z
+
+            // オリジナルのローカル座標を取得
+            // PlaneGeometryは中心(0,0)から生成されるため、左上が(-16, -16)のような値になる
             const z = positions[i * 3 + 2];
             
-            const localZIndex = Math.round(z + this.gridSize / 2);
-            const globalZ = gz * 32 + localZIndex;
+            // グローバルな行インデックスに換算（0.5ズレの判定用）
+            // ローカルZ座標を整数インデックス化
+            const localRow = Math.round(z + this.gridSize / 2);
+            // チャンク位置も考慮した絶対的な行番号
+            const globalRow = gz * segments + localRow;
 
-            if (Math.abs(globalZ) % 2 === 1) {
+            // 行番号が奇数ならXを0.5ずらす
+            if (Math.abs(globalRow) % 2 === 1) {
                 positions[i * 3] += 0.5;
             }
 
-            if (i < heightMap.length) {
-                positions[i * 3 + 1] = heightMap[i];
+            // 高さの適用
+            if (heightMap && i < heightMap.length) {
+                if (heightMap[i] !== undefined) {
+                    positions[i * 3 + 1] = heightMap[i];
+                }
             }
         }
+        
+        // 頂点を動かしたので法線を再計算（ライティング用）
         geometry.computeVertexNormals();
 
         const mesh = new THREE.Mesh(geometry, this.material);
-        mesh.position.set(
-            gx * this.gridSize + this.gridSize / 2, 
-            0, 
-            gz * this.gridSize + this.gridSize / 2
-        );
-        mesh.name = "terrain";
+        // 座標補正: 中心位置へ移動
+        mesh.position.set(gx * this.gridSize + 16, 0, gz * this.gridSize + 16);
+        
+        mesh.castShadow = false; // 地形自体は影を落とさない方がパフォーマンスが良い（必要ならtrueへ）
+        mesh.receiveShadow = true;
+        mesh.name = `Chunk_${key}`;
         
         this.scene.add(mesh);
         this.chunks[key] = mesh;
     }
 
-    getMeshes() { return Object.values(this.chunks); }
+    unloadChunk(gx, gz) {
+        const key = `${gx}_${gz}`;
+        const mesh = this.chunks[key];
+        if (mesh) {
+            this.scene.remove(mesh);
+            mesh.geometry.dispose();
+            delete this.chunks[key];
+        }
+    }
+
+    getMeshes() {
+        const chunks = Object.values(this.chunks);
+        if (chunks.length > 0) return chunks;
+        return [this.baseGround];
+    }
 
     getHeightAt(x, z) {
-        const gx = Math.floor(x / this.gridSize);
-        const gz = Math.floor(z / this.gridSize);
-        const key = `${gx}_${gz}`;
-        const data = this.chunkData[key];
-        if (!data) return null; 
-
-        let lx = x - (gx * this.gridSize);
-        let lz = z - (gz * this.gridSize);
+        // Raycastによる高さ取得
+        // GameEngine等のロジックから呼ばれる
+        const raycaster = new THREE.Raycaster();
+        raycaster.set(new THREE.Vector3(x, 100, z), new THREE.Vector3(0, -1, 0));
         
-        const globalZ = Math.round(gz * 32 + lz);
-        if (Math.abs(globalZ) % 2 === 1) {
-            lx -= 0.5; 
+        const meshes = this.getMeshes();
+        const intersects = raycaster.intersectObjects(meshes);
+        
+        if (intersects.length > 0) {
+            return intersects[0].point.y;
         }
-
-        let ix = Math.round(lx);
-        let iz = Math.round(lz);
-        
-        if (ix < 0) ix = 0; if (ix > 32) ix = 32;
-        if (iz < 0) iz = 0; if (iz > 32) iz = 32;
-
-        const index = iz * 33 + ix;
-        if (index >= 0 && index < data.length) return data[index];
-        return null;
+        return 0; 
     }
 }

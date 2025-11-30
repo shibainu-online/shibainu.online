@@ -1,3 +1,5 @@
+import * as THREE from 'three';
+
 export class InputManager {
     constructor(canvas, camera, terrainManager) {
         this.canvas = canvas;
@@ -14,23 +16,23 @@ export class InputManager {
         
         this.targetPos = null; 
         
-        this.moveSpeed = 300;
+        this.moveSpeed = 300; 
+
+        // イベントハンドラをバインドして保持（removeEventListener用）
+        this._onMouseDown = this.onMouseDown.bind(this);
+        this._onMouseMove = this.onMouseMove.bind(this);
+        this._onMouseUp = this.onMouseUp.bind(this);
+        this._onTouchStart = this.onTouchStart.bind(this);
+        this._onTouchMove = this.onTouchMove.bind(this);
+        this._onTouchEnd = this.onTouchEnd.bind(this);
 
         this.setupEvents();
     }
 
-    setActive(active) {
-        this.isActive = active;
-    }
-    
-    setSpeed(speed) {
-        this.moveSpeed = speed;
-    }
+    setActive(active) { this.isActive = active; }
+    setSpeed(speed) { this.moveSpeed = speed; }
 
     getSpeedFactor() {
-        // C#側: 300のとき100msごとに0.5マス = 5.0マス/秒
-        // JS側 (60fps): 5.0 / 60 = 約0.083
-        // 係数: Speed 300 で 0.085 になるように調整
         return (this.moveSpeed / 300.0) * 0.085; 
     }
 
@@ -39,51 +41,82 @@ export class InputManager {
     }
 
     setupEvents() {
-        // --- マウスイベント (PC) ---
-        this.canvas.addEventListener('mousedown', (e) => {
-            if (!this.isActive) return;
-            this.isMouseDown = true;
-            this.updateMousePos(e);
-            this.performRaycast(); 
-        });
-
-        window.addEventListener('mousemove', (e) => {
-            if (!this.isActive) return;
-            this.updateMousePos(e);
-        });
-
-        window.addEventListener('mouseup', () => this.isMouseDown = false);
+        this.canvas.addEventListener('mousedown', this._onMouseDown);
+        window.addEventListener('mousemove', this._onMouseMove);
+        window.addEventListener('mouseup', this._onMouseUp);
         
-        // --- タッチイベント (スマホ) ---
-        this.canvas.addEventListener('touchstart', (e) => {
-            if (!this.isActive) return;
-            // 1本指タッチのみ反応
-            if (e.touches.length > 0) {
-                e.preventDefault(); // スクロール防止
-                this.isMouseDown = true;
-                this.updateMousePos(e.touches[0]); // Touchオブジェクトから座標取得
-                this.performRaycast();
-            }
-        }, { passive: false });
-
-        this.canvas.addEventListener('touchmove', (e) => {
-            if (!this.isActive) return;
-            if (e.touches.length > 0) {
-                e.preventDefault(); // スクロール防止
-                this.updateMousePos(e.touches[0]);
-            }
-        }, { passive: false });
-
-        window.addEventListener('touchend', () => this.isMouseDown = false);
+        // モバイル対応（パッシブ無効化が必要）
+        this.canvas.addEventListener('touchstart', this._onTouchStart, { passive: false });
+        this.canvas.addEventListener('touchmove', this._onTouchMove, { passive: false });
+        window.addEventListener('touchend', this._onTouchEnd);
         
-        // フォーカス外れ対策
-        window.addEventListener('blur', () => this.isMouseDown = false);
-        window.addEventListener('mouseleave', () => this.isMouseDown = false);
+        window.addEventListener('blur', this._onMouseUp);
+        window.addEventListener('mouseleave', this._onMouseUp);
     }
 
-    updateMousePos(e) {
-        this.mouseX = e.clientX;
-        this.mouseY = e.clientY;
+    dispose() {
+        // イベントリスナーの完全解除
+        this.canvas.removeEventListener('mousedown', this._onMouseDown);
+        window.removeEventListener('mousemove', this._onMouseMove);
+        window.removeEventListener('mouseup', this._onMouseUp);
+        
+        this.canvas.removeEventListener('touchstart', this._onTouchStart);
+        this.canvas.removeEventListener('touchmove', this._onTouchMove);
+        window.removeEventListener('touchend', this._onTouchEnd);
+        
+        window.removeEventListener('blur', this._onMouseUp);
+        window.removeEventListener('mouseleave', this._onMouseUp);
+        
+        console.log("[InputManager] Disposed and event listeners removed.");
+    }
+
+    // --- Event Handlers ---
+
+    onMouseDown(e) {
+        if (!this.isActive) return;
+        this.isMouseDown = true;
+        this.updateMousePos(e.clientX, e.clientY);
+        this.performRaycast(); 
+    }
+
+    onMouseMove(e) {
+        if (!this.isActive) return;
+        this.updateMousePos(e.clientX, e.clientY);
+    }
+
+    onMouseUp() {
+        this.isMouseDown = false;
+        this.targetPos = null; // 即停止
+    }
+
+    onTouchStart(e) {
+        if (!this.isActive) return;
+        if (e.touches.length > 0) {
+            e.preventDefault();
+            this.isMouseDown = true;
+            this.updateMousePos(e.touches[0].clientX, e.touches[0].clientY);
+            this.performRaycast();
+        }
+    }
+
+    onTouchMove(e) {
+        if (!this.isActive) return;
+        if (e.touches.length > 0) {
+            e.preventDefault();
+            this.updateMousePos(e.touches[0].clientX, e.touches[0].clientY);
+        }
+    }
+
+    onTouchEnd() {
+        this.isMouseDown = false;
+        this.targetPos = null;
+    }
+
+    // --- Logic ---
+
+    updateMousePos(x, y) {
+        this.mouseX = x;
+        this.mouseY = y;
     }
 
     update() {
@@ -103,9 +136,10 @@ export class InputManager {
 
         const intersects = this.raycaster.intersectObjects(meshes);
         if (intersects.length > 0) {
-            const point = intersects[0].point;
+            const rawPoint = intersects[0].point;
+            
             if (!this.targetPos) this.targetPos = new THREE.Vector3();
-            this.targetPos.copy(point);
+            this.targetPos.copy(rawPoint);
         }
     }
 

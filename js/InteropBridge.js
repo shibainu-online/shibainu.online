@@ -7,85 +7,100 @@ export class InteropBridge {
     }
 
     setupExports() {
-        // Network Initialization
-        window.initNetwork = (ref) => {
-            if (this.gameEngine.networkManager) this.gameEngine.networkManager.init(ref);
+        window.initNetwork = (ref, networkId) => {
+            if (window.networkManager) window.networkManager.init(ref, networkId);
         };
 
-        // Game Start
         window.StartGame = (logicRef, id, name, x, y, z, speed, colorHex, isVisible) => {
-            this.gameEngine.startGame(logicRef, id, name, x, y, z, speed, colorHex, isVisible);
+            if (this.gameEngine) {
+                this.gameEngine.startGame(logicRef, id, name, x, y, z, speed, colorHex, isVisible);
+            }
         };
-
-        // Network Config
-        window.NetworkInterop = {
-            addSignalingUrl: (url) => { if (this.gameEngine.networkManager) this.gameEngine.networkManager.addSignalingUrl(url); },
-            setForceLocal: (enabled) => { if (this.gameEngine.networkManager) this.gameEngine.networkManager.setForceLocal(enabled); },
-            restart: () => { if (this.gameEngine.networkManager) this.gameEngine.networkManager.connect(); }
-        };
-
-        // P2P Messaging
-        window.broadcastMessage = (m) => {
-            if (this.gameEngine.networkManager) this.gameEngine.networkManager.broadcast(m);
-        };
-
-        // Terrain
-        window.TerrainInterop = {
-            loadChunk: (gx, gz, heightMap) => {
-                if (this.gameEngine.terrainManager) this.gameEngine.terrainManager.loadChunk(gx, gz, heightMap);
+        
+        // ★追加: 破棄用API
+        window.DisposeGame = () => {
+            if (this.gameEngine) {
+                this.gameEngine.dispose();
             }
         };
 
-        // Visual Entities
+        window.NetworkInterop = {
+            addSignalingUrl: (url) => { if (window.networkManager) window.networkManager.addSignalingUrl(url); },
+            setForceLocal: (enabled) => { if (window.networkManager) window.networkManager.setForceLocal(enabled); },
+            restart: () => { 
+                console.warn("Restart requested via Interop.");
+                if(window.restart) window.restart("Requested by System");
+            }
+        };
+
+        window.broadcastMessage = (m) => {
+            if (window.networkManager) window.networkManager.broadcast(m);
+        };
+
+        window.TerrainInterop = {
+            loadChunk: (gx, gz, heightMap) => {
+                if (this.gameEngine && this.gameEngine.terrainManager) {
+                    this.gameEngine.terrainManager.loadChunk(gx, gz, heightMap);
+                }
+            }
+        };
+
         window.VisualEntityInterop = {
-            updateEntity: (id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed) => {
-                if (id === this.gameEngine.localPlayerId) return;
-                if (this.gameEngine.visualEntityManager) {
-                    this.gameEngine.visualEntityManager.updateEntity(id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed);
+            updateEntity: (id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed, modelType, modelDataId) => {
+                if (this.gameEngine && this.gameEngine.visualEntityManager) {
+                    this.gameEngine.visualEntityManager.updateEntity(id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed, modelType, modelDataId);
                 }
             },
             removeEntity: (id) => {
-                if (this.gameEngine.visualEntityManager) this.gameEngine.visualEntityManager.removeEntity(id);
+                if (this.gameEngine && this.gameEngine.visualEntityManager) {
+                    this.gameEngine.visualEntityManager.removeEntity(id);
+                }
             }
         };
 
-        // Player & Camera Control
-        window.SyncLocalPosition = (x, y, z) => this.gameEngine.syncLocalPosition(x, y, z);
-        window.renderBox = (hex) => this.gameEngine.renderBox(hex);
-        window.SetPlayerSpeed = (speed) => this.gameEngine.setPlayerSpeed(speed);
-        window.WarpLocalPlayer = (x, y, z) => this.gameEngine.warpLocalPlayer(x, y, z);
+        // Player Control
+        window.SyncLocalPosition = (x, y, z) => {
+            if (this.gameEngine) this.gameEngine.warpLocalPlayer(x, y, z);
+        };
         
-        // Placement Mode
-        window.StartPlacementMode = (id) => this.gameEngine.startPlacementMode(id);
-        window.EndPlacementMode = () => this.gameEngine.endPlacementMode();
+        window.renderBox = (hex) => {
+            if(this.gameEngine && this.gameEngine.renderBox) this.gameEngine.renderBox(hex);
+        };
+        
+        window.SetPlayerSpeed = (speed) => {
+            if (this.gameEngine) this.gameEngine.setPlayerSpeed(speed);
+        };
+        
+        window.WarpLocalPlayer = (x, y, z) => {
+            if (this.gameEngine) this.gameEngine.warpLocalPlayer(x, y, z);
+        };
+        
+        window.StartPlacementMode = (id) => {
+            if (this.gameEngine) this.gameEngine.startPlacementMode(id);
+        };
+        
+        window.EndPlacementMode = () => {
+            if (this.gameEngine) return this.gameEngine.endPlacementMode();
+            return null;
+        };
 
-        // UI / Tools
         window.ToggleMinimap = () => {
-            if (this.gameEngine.minimapManager) return this.gameEngine.minimapManager.toggle();
+            if (this.gameEngine && this.gameEngine.minimapManager) return this.gameEngine.minimapManager.toggle();
             return false;
         };
         window.ToggleNamePlates = () => {
-            if (!this.gameEngine.visualEntityManager) return;
-            return this.gameEngine.visualEntityManager.toggleNamePlates();
-        };
-
-        // Legacy / Fallback
-        window.UpdateRemotePlayer = (id, x, y, z, colorHex) => {
-            if (this.gameEngine.visualEntityManager) 
-                this.gameEngine.visualEntityManager.updateEntity(id, x, y, z, colorHex, id, "Player");
+            if (this.gameEngine && this.gameEngine.visualEntityManager) return this.gameEngine.visualEntityManager.toggleNamePlates();
         };
     }
 
     setupCryptoInterop() {
         window.CryptoInterop = {
-            // RSA Key Generation
             generateKeys: async () => {
                 const keyPair = await window.crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
                 const priv = await window.crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
                 const pub = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
                 return { privateKey: this.toPem(priv, "PRIVATE KEY"), publicKey: this.toPem(pub, "PUBLIC KEY") };
             },
-            // RSA Public Key Import
             getPublicKeyFromPrivate: async (privPem) => {
                 try {
                     const privBuf = this.pemToBuffer(privPem);
@@ -97,7 +112,6 @@ export class InteropBridge {
                     return this.toPem(pubBuf, "PUBLIC KEY");
                 } catch (e) { return ""; }
             },
-            // RSA Sign
             signData: async (data, privPem) => {
                 try {
                     const privBuf = this.pemToBuffer(privPem);
@@ -107,7 +121,6 @@ export class InteropBridge {
                     return this.arrayBufferToBase64(signature);
                 } catch (e) { return ""; }
             },
-            // RSA Verify
             verifyData: async (data, signatureBase64, pubPem) => {
                 try {
                     const pubBuf = this.pemToBuffer(pubPem);
@@ -117,40 +130,26 @@ export class InteropBridge {
                     return await window.crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, sigBuf, enc.encode(data));
                 } catch (e) { return false; }
             },
-            // AES Encrypt (GCM)
             aesEncrypt: async (plainText, password) => {
                 try {
                     const enc = new TextEncoder();
                     const salt = window.crypto.getRandomValues(new Uint8Array(16));
                     const key = await this.deriveKey(password, salt);
                     const iv = window.crypto.getRandomValues(new Uint8Array(12));
-                    const encrypted = await window.crypto.subtle.encrypt(
-                        { name: "AES-GCM", iv: iv },
-                        key,
-                        enc.encode(plainText)
-                    );
-                    
+                    const encrypted = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, enc.encode(plainText));
                     const combined = new Uint8Array(salt.byteLength + iv.byteLength + encrypted.byteLength);
-                    combined.set(salt, 0);
-                    combined.set(iv, salt.byteLength);
-                    combined.set(new Uint8Array(encrypted), salt.byteLength + iv.byteLength);
+                    combined.set(salt, 0); combined.set(iv, salt.byteLength); combined.set(new Uint8Array(encrypted), salt.byteLength + iv.byteLength);
                     return this.arrayBufferToBase64(combined.buffer);
-                } catch (e) { console.error(e); return ""; }
+                } catch (e) { return ""; }
             },
-            // AES Decrypt (GCM)
             aesDecrypt: async (encryptedBase64, password) => {
                 try {
                     const combined = this.base64ToArrayBuffer(encryptedBase64);
                     const salt = combined.slice(0, 16);
                     const iv = combined.slice(16, 28);
                     const data = combined.slice(28);
-
                     const key = await this.deriveKey(password, salt);
-                    const decrypted = await window.crypto.subtle.decrypt(
-                        { name: "AES-GCM", iv: iv },
-                        key,
-                        data
-                    );
+                    const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, data);
                     return new TextDecoder().decode(decrypted);
                 } catch (e) { return ""; }
             }
@@ -159,25 +158,14 @@ export class InteropBridge {
 
     setupClipboardInterop() {
         window.ClipboardInterop = {
-            copyText: (text) => {
-                navigator.clipboard.writeText(text).then(function() {}, function(err) {});
-            }
+            copyText: (text) => { navigator.clipboard.writeText(text).catch(err => {}); }
         };
     }
 
-    // Crypto Helpers
     async deriveKey(password, salt) {
         const enc = new TextEncoder();
-        const keyMaterial = await window.crypto.subtle.importKey(
-            "raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]
-        );
-        return window.crypto.subtle.deriveKey(
-            { name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
-            keyMaterial,
-            { name: "AES-GCM", length: 256 },
-            false,
-            ["encrypt", "decrypt"]
-        );
+        const keyMaterial = await window.crypto.subtle.importKey("raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]);
+        return window.crypto.subtle.deriveKey({ name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
     }
 
     toPem(buffer, label) { const b64 = this.arrayBufferToBase64(buffer); return `-----BEGIN ${label}-----\n${b64}\n-----END ${label}-----`; }

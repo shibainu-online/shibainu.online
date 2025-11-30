@@ -1,37 +1,55 @@
 import { GameEngine } from './GameEngine.js';
+import { NetworkManager } from './NetworkManager.js';
 import { InteropBridge } from './InteropBridge.js';
+import './NetworkInterop.js';
 
-async function bootstrap() {
-    // 1. Load Three.js with Hash Cache-Busting
-    let scriptSrc = 'three.module.js';
-    try {
-        const r = await fetch('js/Three.js_hash.txt');
-        if (r.ok) {
-            const h = await r.text();
-            if (h.trim()) scriptSrc = `three.${h.trim()}.js`;
-        }
-    } catch (e) {
-        console.warn("[Main] Hash load failed, using default.");
-    }
+console.log("[Main] Loading Main.js (Genesis Fix / External Server / RenderBox Fix)");
 
-    try {
-        // Dynamic Import of Three.js
-        const m = await import(`./${scriptSrc}`);
-        window.THREE = m;
+window.gameEngine = new GameEngine();
+window.networkManager = new NetworkManager();
 
-        // 2. Initialize Game Engine
-        const gameEngine = new GameEngine();
+const bridge = new InteropBridge(window.gameEngine);
+
+const handleGenesisRequest = (reason) => {
+    console.warn(`[Main] System requested action. Reason: ${reason}`);
+
+    const message = 
+        "【世界データの確認】\n\n" +
+        "ネットワーク上およびローカルストレージに有効な世界データが見つかりませんでした。\n" +
+        "あなたはマスター権限を持っています。\n\n" +
+        "この場所・この時間を起点として、新たに世界を「創造（Genesis）」しますか？\n\n" +
+        "[OK] : はい、ここを新たな世界の始まりとします。（ゲーム開始）\n" +
+        "[キャンセル] : いいえ、接続を再試行します。（リロード）";
+
+    const shouldGenesis = confirm(message);
+
+    if (shouldGenesis) {
+        console.log("[Main] Genesis approved. Continuing execution WITHOUT reload.");
+        const errorModal = document.getElementById('error-modal');
+        if (errorModal) errorModal.remove();
         
-        // 3. Initialize Interop (Connecting C# and JS)
-        new InteropBridge(gameEngine);
+    } else {
+        console.log("[Main] Genesis rejected. Reloading...");
+        window.location.reload(); 
+    }
+};
 
-        // 4. Start Engine Initialization
-        gameEngine.init();
+if (window.NetworkInterop) {
+    window.NetworkInterop.restart = handleGenesisRequest;
+} else {
+    window.addEventListener('load', () => {
+        if (window.NetworkInterop) window.NetworkInterop.restart = handleGenesisRequest;
+    });
+}
+window.restart = handleGenesisRequest;
 
-        console.log("[Main] ShibainuOnline Engine Started.");
+export function bootstrap() {
+    console.log("[Main] Initializing Game Engine...");
+    try {
+        window.gameEngine.init('renderCanvas'); 
     } catch (e) {
-        console.error("[Main] Critical Error:", e);
+        console.error("[Main] Game Engine Init Failed:", e);
     }
 }
 
-bootstrap();
+window.addEventListener('load', bootstrap);

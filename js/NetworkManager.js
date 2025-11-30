@@ -2,132 +2,116 @@ export class NetworkManager {
     constructor() {
         this.dotNetRef = null;
         this.myId = crypto.randomUUID();
-        
-        this.peers = {}; 
+        this.networkId = "Shibainu"; 
+
+        this.peers = {};
         this.dataChannels = {};
         this.broadcastChannel = null;
 
-        // シグナリングサーバーリスト
         this.signalingUrls = [
             "https://close-creation.ganjy.net/matching/signaling.php"
         ];
-        
+
         this.currentSignalingUrl = null;
         this.lastMsgTime = 0;
-        
+
         this.rtcConfig = {
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' }
+            ]
         };
 
         this.forceLocal = false;
         this.pollTimer = null;
-        
         this.isActive = false;
-        
         this.messageQueue = [];
         this.candidateQueue = {};
-        
-        // リトライ用
+
         this.retryCount = 0;
-        this.maxRetries = 20; // 20回試行 (約40秒)
+        this.maxRetries = 20;
     }
 
-    init(dotNetRef) {
+    init(dotNetRef, networkId) {
         this.dotNetRef = dotNetRef;
-        console.log("[Network] Initialized (Ref updated). My PeerID:", this.myId);
         
-        // 既に稼働中なら再接続しない
-        if (!this.isActive) {
-            this.connect();
-        } else {
-            console.log("[Network] Already active, skipping reconnection.");
+        let networkChanged = false;
+        if (networkId && this.networkId !== networkId) {
+            this.networkId = networkId;
+            networkChanged = true;
         }
+        
+        console.log(`[Network] Initialized. ID: ${this.myId}, Network: ${this.networkId}`);
+
+        if (this.isActive || networkChanged) {
+            console.log("[Network] Resetting connection for new configuration...");
+            this.cleanup();
+            this.isActive = false;
+        }
+
+        this.connect();
     }
-    
+
     async connect() {
         this.cleanup();
-        this.isActive = true; 
+        this.isActive = true;
 
         if (this.forceLocal) {
-            console.warn("[Network] Force Local Mode enabled via UI.");
+            console.warn("[Network] Force Local Mode enabled.");
             this.setupBroadcastChannel();
             return;
         }
-        
-        console.log("[Network] Attempting to connect to signaling server...");
+
+        console.log(`[Network] Connecting to ${this.networkId} network...`);
         const signalingUrl = await this.findSignalingServerWithRetry();
 
         if (signalingUrl) {
             this.currentSignalingUrl = signalingUrl;
-            console.log("[Network] Global Mode: Connected to", signalingUrl);
+            console.log("[Network] Signaling Server Connected:", signalingUrl);
             this.startSignalingLoop();
         } else {
-            console.warn("[Network] Connection Failed after retries. Fallback to BroadcastChannel (Local Mode).");
+            console.warn("[Network] Connection Failed. Fallback to Local Mode.");
             this.setupBroadcastChannel();
         }
     }
-    
-    // リトライ付きでサーバーを探す
+
     async findSignalingServerWithRetry() {
         this.retryCount = 0;
-        
         while (this.retryCount < this.maxRetries && this.isActive) {
-            // UIで強制ローカルに切り替えられたら中断
             if (this.forceLocal) return null;
 
             const url = this.signalingUrls[this.retryCount % this.signalingUrls.length];
-            console.log(`[Network] Connecting to ${url} (Attempt ${this.retryCount + 1}/${this.maxRetries})...`);
-            
             try {
                 const controller = new AbortController();
-                const id = setTimeout(() => controller.abort(), 2000); // 2秒タイムアウト
-                
-                const res = await fetch(url, { method: 'GET', signal: controller.signal });
+                const id = setTimeout(() => controller.abort(), 3000);
+                const res = await fetch(`${url}?room=ping`, { method: 'GET', signal: controller.signal });
                 clearTimeout(id);
-                
-                if (res.ok) {
-                    return url; // 成功したらそのURLを返す
-                }
-            } catch (e) {
-                // タイムアウトやエラーは無視して次へ
-            }
-            
+                if (res.ok) return url;
+            } catch (e) { }
+
             this.retryCount++;
-            // 少し待ってから次へ
-            await new Promise(r => setTimeout(r, 200));
+            await new Promise(r => setTimeout(r, 500));
         }
         return null;
     }
-    
+
     cleanup() {
-        if (this.pollTimer) {
-            clearInterval(this.pollTimer);
-            this.pollTimer = null;
-        }
-        if (this.broadcastChannel) {
-            this.broadcastChannel.close();
-            this.broadcastChannel = null;
-        }
-        
-        for (const id in this.peers) {
-            this.peers[id].close();
-        }
+        if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+        if (this.broadcastChannel) { this.broadcastChannel.close(); this.broadcastChannel = null; }
+        for (const id in this.peers) { this.peers[id].close(); }
         this.peers = {};
         this.dataChannels = {};
-        this.messageQueue = [];
-        this.candidateQueue = {};
     }
 
     addSignalingUrl(url) {
         if (url && !this.signalingUrls.includes(url)) {
             this.signalingUrls.unshift(url);
-            console.log("[Network] Added signaling URL:", url);
+            if (this.isActive) this.connect();
         }
     }
-    
-    setForceLocal(enabled) {
-        this.forceLocal = enabled;
-    }
+
+    setForceLocal(enabled) { this.forceLocal = enabled; }
 
     onDataReceived(data) {
         if (this.dotNetRef) {
@@ -139,7 +123,6 @@ export class NetworkManager {
         const peerIds = Object.keys(this.dataChannels);
         let sentCount = 0;
 
-        // WebRTC
         if (peerIds.length > 0) {
             peerIds.forEach(id => {
                 const dc = this.dataChannels[id];
@@ -149,112 +132,108 @@ export class NetworkManager {
                 }
             });
         }
-        // Local
         else if (this.broadcastChannel) {
             this.broadcastChannel.postMessage(message);
             sentCount++;
         }
+        else if (this.currentSignalingUrl) {
+            this.sendSignal({ type: 'broadcast', sender: this.myId, content: message, networkId: this.networkId });
+            sentCount++;
+        }
 
-        // 誰も送る相手がいない場合はキューに保存
-        if (sentCount === 0) {
+        if (sentCount === 0 && !this.currentSignalingUrl) {
             this.messageQueue.push(message);
-            setTimeout(() => {
-                const idx = this.messageQueue.indexOf(message);
-                if (idx > -1) this.messageQueue.splice(idx, 1);
-            }, 10000);
         }
     }
 
     setupBroadcastChannel() {
-        this.broadcastChannel = new BroadcastChannel('game_mesh_network');
-        this.broadcastChannel.onmessage = (e) => {
-            this.onDataReceived(e.data);
-        };
-        console.log("[Network] BroadcastChannel is ready.");
+        this.broadcastChannel = new BroadcastChannel(`game_mesh_${this.networkId}`);
+        this.broadcastChannel.onmessage = (e) => this.onDataReceived(e.data);
     }
 
     async startSignalingLoop() {
         if (!this.currentSignalingUrl) return;
         this.pollTimer = setInterval(() => this.pollSignalingServer(), 2000);
-        this.sendSignal({ type: 'join', sender: this.myId });
+        this.sendSignal({ type: 'join', sender: this.myId, networkId: this.networkId });
+    }
+
+    getRoomName() {
+        return `chromamesia_${this.networkId}`;
     }
 
     async pollSignalingServer() {
         if (!this.currentSignalingUrl) return;
         try {
-            const res = await fetch(`${this.currentSignalingUrl}?room=chromamesia_global`);
+            const room = this.getRoomName();
+            const res = await fetch(`${this.currentSignalingUrl}?room=${room}&_=${Date.now()}`);
             if (!res.ok) return;
             const messages = await res.json();
+
+            if (!Array.isArray(messages)) return;
+
             messages.forEach(msg => {
                 if (msg.time > this.lastMsgTime && msg.sender !== this.myId) {
-                    this.handleSignal(msg);
+                    if (!msg.networkId || msg.networkId === this.networkId) {
+                        this.handleSignal(msg);
+                    }
                 }
             });
             if (messages.length > 0) {
                 this.lastMsgTime = Math.max(...messages.map(m => m.time));
             }
-        } catch (e) {}
+        } catch (e) { }
     }
 
     async sendSignal(data) {
         if (!this.currentSignalingUrl) return;
         try {
-            await fetch(`${this.currentSignalingUrl}?room=chromamesia_global`, {
+            data.time = Date.now() / 1000.0;
+            data.networkId = this.networkId; 
+            const room = this.getRoomName();
+            
+            await fetch(`${this.currentSignalingUrl}?room=${room}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
-        } catch (e) {}
+        } catch (e) { }
     }
 
     async handleSignal(msg) {
         if (msg.sender === this.myId) return;
         const targetId = msg.sender;
-        
+
         switch (msg.type) {
+            case 'broadcast':
+                if (msg.content) this.onDataReceived(msg.content);
+                break;
             case 'join':
                 if (!this.peers[targetId]) {
-                    // ★修正: 通信の衝突(Glare)を防ぐため、IDが小さい方だけが発信するルールにする
-                    if (this.myId < targetId) {
-                        console.log(`[Network] Found peer ${targetId}. Initiating connection (MyID < TargetID).`);
-                        this.connectToPeer(targetId, true); 
-                    } else {
-                        // ★追加: IDが大きい場合、相手(小さい方)は自分の古いJoinを見ていない可能性がある
-                        // そのため、もう一度Joinを送って存在をアピールする
-                        console.log(`[Network] Found peer ${targetId}. Waiting for Offer (MyID > TargetID). Re-sending Join.`);
-                        this.sendSignal({ type: 'join', sender: this.myId });
-                    }
+                    if (this.myId < targetId) this.connectToPeer(targetId, true);
+                    else this.sendSignal({ type: 'join', sender: this.myId, networkId: this.networkId });
                 }
                 break;
             case 'offer':
-                if (msg.target === this.myId) {
-                    console.log("[Network] Received offer from:", targetId);
-                    // Offerが来たら（自分がInitiatorかどうかに関わらず）受ける
-                    this.connectToPeer(targetId, false, msg.sdp);
-                }
+                if (msg.target === this.myId) this.connectToPeer(targetId, false, msg.sdp);
                 break;
             case 'answer':
                 if (msg.target === this.myId && this.peers[targetId]) {
-                    console.log("[Network] Received answer from:", targetId);
                     try {
                         await this.peers[targetId].setRemoteDescription(new RTCSessionDescription(msg.sdp));
                         this.processCandidateQueue(targetId);
-                    } catch (e) { console.error("SetRemoteDesc Error:", e); }
+                    } catch (e) { }
                 }
                 break;
             case 'candidate':
                 if (msg.target === this.myId && this.peers[targetId]) {
                     const pc = this.peers[targetId];
                     try {
-                        if (pc.remoteDescription && pc.remoteDescription.type) {
-                            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-                        } else {
-                            throw new Error("Remote description not ready");
+                        if (pc.remoteDescription) await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+                        else {
+                            if (!this.candidateQueue[targetId]) this.candidateQueue[targetId] = [];
+                            this.candidateQueue[targetId].push(msg.candidate);
                         }
-                    } catch (e) {
-                        if (!this.candidateQueue[targetId]) this.candidateQueue[targetId] = [];
-                        this.candidateQueue[targetId].push(msg.candidate);
-                    }
+                    } catch (e) { }
                 }
                 break;
         }
@@ -265,16 +244,14 @@ export class NetworkManager {
         const queue = this.candidateQueue[peerId];
         if (pc && queue) {
             for (const candidate of queue) {
-                try {
-                    await pc.addIceCandidate(new RTCIceCandidate(candidate));
-                } catch(e) {}
+                try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { }
             }
             delete this.candidateQueue[peerId];
         }
     }
 
     async connectToPeer(peerId, isInitiator, offerSdp = null) {
-        if (this.peers[peerId]) return; 
+        if (this.peers[peerId]) return;
         const pc = new RTCPeerConnection(this.rtcConfig);
         this.peers[peerId] = pc;
 
@@ -282,51 +259,37 @@ export class NetworkManager {
             const dc = pc.createDataChannel("game_data");
             this.setupDataChannel(dc, peerId);
         } else {
-            pc.ondatachannel = (e) => {
-                this.setupDataChannel(e.channel, peerId);
-            };
+            pc.ondatachannel = (e) => this.setupDataChannel(e.channel, peerId);
         }
 
         pc.onicecandidate = (e) => {
-            if (e.candidate) {
-                this.sendSignal({ type: 'candidate', target: peerId, sender: this.myId, candidate: e.candidate });
-            }
+            if (e.candidate) this.sendSignal({ type: 'candidate', target: peerId, sender: this.myId, candidate: e.candidate, networkId: this.networkId });
         };
 
         if (isInitiator) {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-            this.sendSignal({ type: 'offer', target: peerId, sender: this.myId, sdp: offer });
+            this.sendSignal({ type: 'offer', target: peerId, sender: this.myId, sdp: offer, networkId: this.networkId });
         } else {
             await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
             this.processCandidateQueue(peerId);
-
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            this.sendSignal({ type: 'answer', target: peerId, sender: this.myId, sdp: answer });
+            this.sendSignal({ type: 'answer', target: peerId, sender: this.myId, sdp: answer, networkId: this.networkId });
         }
     }
 
     setupDataChannel(dc, peerId) {
         this.dataChannels[peerId] = dc;
-        
         dc.onopen = () => {
-            console.log(`[Network] P2P Connected to ${peerId}! (DataChannel Open)`);
-            if (this.messageQueue.length > 0) {
-                console.log(`[Network] Sending ${this.messageQueue.length} queued messages to ${peerId}`);
-                this.messageQueue.forEach(msg => dc.send(msg));
-            }
+            console.log(`[Network] Direct P2P to ${peerId} OK (${this.networkId}).`);
+            this.messageQueue.forEach(msg => dc.send(msg));
+            this.messageQueue = [];
         };
-
         dc.onmessage = (e) => this.onDataReceived(e.data);
         dc.onclose = () => {
-            console.log(`[Network] Disconnected from ${peerId}`);
             delete this.peers[peerId];
             delete this.dataChannels[peerId];
         };
-    }
-    
-    async verifyMasterKey(privateKeyBase64, publicKeyBase64) {
-        return true; 
     }
 }
