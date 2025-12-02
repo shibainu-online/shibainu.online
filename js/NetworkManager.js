@@ -15,12 +15,11 @@ export class NetworkManager {
         this.currentSignalingUrl = null;
         this.lastMsgTime = 0;
 
-        // Default RTC Configuration (Default TURN is 127.0.0.1 for local bridge)
+        // Default: Google STUN only. No TURN by default.
         this.rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'turn:127.0.0.1:443?transport=tcp', username: 'shibainu', credential: 'bridge' }
+                { urls: 'stun:stun1.l.google.com:19302' }
             ]
         };
 
