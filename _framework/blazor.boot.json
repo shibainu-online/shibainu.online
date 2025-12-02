@@ -1,7 +1,7 @@
 {
   "mainAssemblyName": "Game",
   "resources": {
-    "hash": "sha256-WtiG3EDhyx2UZIyiQ6d1KjX1myxd3eIIYms4q6ZsSA8=",
+    "hash": "sha256-RBLiaMSHLm32ip43TNEccnwoImsZ9dMjGanIYgZjfRo=",
     "jsModuleNative": {
       "dotnet.native.js": "sha256-vtotCeXt2UD6oc459laJT32vBgigZ+eLoUmdeFkvYDk="
     },
@@ -18,7 +18,7 @@
     },
     "coreAssembly": {},
     "assembly": {
-      "Game.wasm": "sha256-x39G6Ees6OxeMQqTXX8hG6YS9w27s9/kQnkrayb+lmw=",
+      "Game.wasm": "sha256-mjlecJd5ktQZHofCyTsS/qDO8uqXjcemdw1M+mpnLMY=",
       "Microsoft.AspNetCore.Components.wasm": "sha256-6tP327vAaFzD5aLAyv1txBstRwo4HFjljviveIKMXXY=",
       "Microsoft.AspNetCore.Components.Web.wasm": "sha256-qCq9/iPjf2yZ072TKlP6tinsd+fY0/Zlc9xI+wOVv8k=",
       "Microsoft.AspNetCore.Components.WebAssembly.wasm": "sha256-Rp8J/ZOt5ir2fiX8m53leYmkSXUmLuGprtw/lxTMKoI=",

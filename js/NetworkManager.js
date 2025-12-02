@@ -15,13 +15,11 @@ export class NetworkManager {
         this.currentSignalingUrl = null;
         this.lastMsgTime = 0;
 
-        // ★修正: ローカルブリッジ (ShibainuBridge.exe) への接続設定を追加
+        // Default RTC Configuration (Default TURN is 127.0.0.1 for local bridge)
         this.rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                // ブリッジアプリ用設定 (TURN over TCP)
-                // 認証情報はダミーですが、ブラウザの仕様上必須です
                 { urls: 'turn:127.0.0.1:443?transport=tcp', username: 'shibainu', credential: 'bridge' }
             ]
         };
@@ -61,6 +59,34 @@ export class NetworkManager {
         }
 
         this.connect();
+    }
+
+    // ★追加: TURNサーバーの動的変更と再接続
+    setTurnUrl(url) {
+        if (!url) return;
+        console.log(`[Network] Overwriting TURN URL to: ${url}`);
+        
+        // 既存のTURN設定を除去（STUNは維持）
+        const newIceServers = this.rtcConfig.iceServers.filter(server => {
+            if (typeof server.urls === 'string') return !server.urls.startsWith('turn:');
+            if (Array.isArray(server.urls)) return !server.urls.some(u => u.startsWith('turn:'));
+            return true;
+        });
+
+        // 新しいTURN設定を追加（認証情報はダミー固定）
+        newIceServers.push({
+            urls: url,
+            username: 'shibainu',
+            credential: 'bridge'
+        });
+
+        this.rtcConfig.iceServers = newIceServers;
+
+        // アクティブなら再接続
+        if (this.isActive) {
+            console.log("[Network] Reconnecting with new TURN settings...");
+            this.connect();
+        }
     }
 
     async connect() {
@@ -124,8 +150,6 @@ export class NetworkManager {
     setForceLocal(enabled) { this.forceLocal = enabled; }
 
     onDataReceived(data) {
-        // ★重要: アセット転送パケットのインターセプト
-        // C#には渡さず、ここで処理して負荷を下げる
         if (data.startsWith("CMD_ASSET_")) {
             this.handleAssetMessage(data);
             return;
@@ -314,10 +338,7 @@ export class NetworkManager {
 
     requestAsset(hash) {
         if (!window.assetManager) return;
-        
-        // 重複リクエスト防止（タイムアウト5秒）
         if (this.activeRequests[hash] && (Date.now() - this.activeRequests[hash].timestamp < 5000)) return;
-        
         this.activeRequests[hash] = { timestamp: Date.now() };
         console.log(`[Swarm] Broadcasting Manifest Request for: ${hash.substr(0,8)}...`);
         this.broadcast(`CMD_ASSET_REQ_MANIFEST:${hash}`);
@@ -329,47 +350,34 @@ export class NetworkManager {
         const hash = parts[1];
 
         if (cmd === "CMD_ASSET_REQ_MANIFEST") {
-            // 他の人がマニフェスト（ファイル情報）を求めている
-            // 自分が持っていれば教えてあげる
             if (window.assetManager) {
                 const meta = await window.assetManager.getAssetMetadata(hash);
                 if (meta) {
-                    // console.log(`[Swarm] Serving Manifest for ${hash.substr(0,8)}...`);
                     this.broadcast(`CMD_ASSET_MANIFEST_RESP:${hash}:${meta.chunkCount}`);
                 }
             }
         }
         else if (cmd === "CMD_ASSET_MANIFEST_RESP") {
-            // マニフェスト情報が届いた
-            // まだ持っていないなら、ダウンロードを開始する
             const count = parseInt(parts[2]);
             if (!window.assetManager) return;
-
             const hasIt = await window.assetManager.hasAsset(hash);
             if (!hasIt) {
-                // ダウンロード開始（ランダムなピアにチャンクを要求）
-                // 本来は持っているピアを管理すべきだが、簡易実装としてブロードキャストで要求する
-                // console.log(`[Swarm] Starting download for ${hash} (${count} chunks)`);
                 this.startDownloadingChunks(hash, count);
             }
         }
         else if (cmd === "CMD_ASSET_REQ_CHUNK") {
-            // チャンクデータを要求された
             const index = parseInt(parts[2]);
             if (window.assetManager) {
                 const chunkData = await window.assetManager.getChunk(hash, index);
                 if (chunkData) {
-                    // console.log(`[Swarm] Serving Chunk ${index} of ${hash.substr(0,8)}...`);
-                    this.broadcast(`CMD_ASSET_CHUNK_DATA:${hash}:${index}:${parts[3]}:${chunkData}`); // parts[3] is total count
+                    this.broadcast(`CMD_ASSET_CHUNK_DATA:${hash}:${index}:${parts[3]}:${chunkData}`);
                 }
             }
         }
         else if (cmd === "CMD_ASSET_CHUNK_DATA") {
-            // チャンクデータが届いた
             const index = parseInt(parts[2]);
             const total = parseInt(parts[3]);
-            const data = parts[4]; // Base64 data
-            
+            const data = parts[4];
             if (window.assetManager) {
                 window.assetManager.receiveChunk(hash, index, total, data);
             }
@@ -377,19 +385,12 @@ export class NetworkManager {
     }
 
     startDownloadingChunks(hash, count) {
-        // 並列ダウンロード
-        // 負荷分散のため、ランダムな順序で要求を投げる（簡易実装）
-        // タイミングをずらしてブロードキャストする
-        
         const indices = Array.from({length: count}, (_, i) => i);
-        // シャッフル
         indices.sort(() => Math.random() - 0.5);
-
         indices.forEach((index, i) => {
             setTimeout(() => {
-                // console.log(`[Swarm] Requesting chunk ${index}/${count}`);
                 this.broadcast(`CMD_ASSET_REQ_CHUNK:${hash}:${index}:${count}`);
-            }, i * 50); // 50ms間隔でリクエスト発射
+            }, i * 50);
         });
     }
 }
