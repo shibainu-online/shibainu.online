@@ -11,11 +11,13 @@ export class NetworkManager {
         this.signalingUrls = [
             "https://close-creation.ganjy.net/matching/signaling.php"
         ];
+        
+        // NEW: Registry URL
+        this.registryUrl = "https://close-creation.ganjy.net/matching/turn_registry.php";
 
         this.currentSignalingUrl = null;
         this.lastMsgTime = 0;
 
-        // Default: Google STUN only. No TURN by default.
         this.rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
@@ -32,8 +34,7 @@ export class NetworkManager {
         this.retryCount = 0;
         this.maxRetries = 20;
         
-        // --- Swarm State ---
-        this.activeRequests = {}; // { hash: { timestamp, chunks: [] } }
+        this.activeRequests = {};
     }
 
     init(dotNetRef, networkId, config) {
@@ -57,22 +58,45 @@ export class NetworkManager {
             this.isActive = false;
         }
 
-        this.connect();
+        // ★追加: 接続前にレジストリからTURNリストを取得
+        this.fetchPublicTurnServers().then(() => {
+            this.connect();
+        });
     }
 
-    // ★追加: TURNサーバーの動的変更と再接続
+    async fetchPublicTurnServers() {
+        if (this.forceLocal) return;
+        try {
+            console.log("[Network] Checking Public TURN Registry...");
+            const res = await fetch(this.registryUrl);
+            if (res.ok) {
+                const servers = await res.json();
+                if (Array.isArray(servers) && servers.length > 0) {
+                    console.log(`[Network] Found ${servers.length} public TURN servers!`);
+                    // 既存のSTUN設定に、取得したTURN設定をマージする
+                    this.rtcConfig.iceServers = [
+                        ...this.rtcConfig.iceServers.filter(s => !s.urls.toString().startsWith('turn:')), // 重複防止で既存TURN削除
+                        ...servers
+                    ];
+                } else {
+                    console.log("[Network] No public TURN servers active.");
+                }
+            }
+        } catch (e) {
+            console.warn("[Network] Registry check failed:", e);
+        }
+    }
+
     setTurnUrl(url) {
         if (!url) return;
         console.log(`[Network] Overwriting TURN URL to: ${url}`);
         
-        // 既存のTURN設定を除去（STUNは維持）
         const newIceServers = this.rtcConfig.iceServers.filter(server => {
             if (typeof server.urls === 'string') return !server.urls.startsWith('turn:');
             if (Array.isArray(server.urls)) return !server.urls.some(u => u.startsWith('turn:'));
             return true;
         });
 
-        // 新しいTURN設定を追加（認証情報はダミー固定）
         newIceServers.push({
             urls: url,
             username: 'shibainu',
@@ -81,7 +105,6 @@ export class NetworkManager {
 
         this.rtcConfig.iceServers = newIceServers;
 
-        // アクティブなら再接続
         if (this.isActive) {
             console.log("[Network] Reconnecting with new TURN settings...");
             this.connect();
