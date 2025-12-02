@@ -15,11 +15,14 @@ export class NetworkManager {
         this.currentSignalingUrl = null;
         this.lastMsgTime = 0;
 
+        // ★修正: ローカルブリッジ (ShibainuBridge.exe) への接続設定を追加
         this.rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' }
+                // ブリッジアプリ用設定 (TURN over TCP)
+                // 認証情報はダミーですが、ブラウザの仕様上必須です
+                { urls: 'turn:127.0.0.1:443?transport=tcp', username: 'shibainu', credential: 'bridge' }
             ]
         };
 

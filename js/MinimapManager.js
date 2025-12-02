@@ -40,6 +40,11 @@ export class MinimapManager {
         this.ctx = this.canvas.getContext('2d');
         this.range = 32 * 1.5; 
         this.playerPos = { x:0, y:0, z:0 };
+        
+        // 移動方向計算用の履歴変数
+        this.lastPx = 0;
+        this.lastPz = 0;
+        this.lastRot = 0;
     }
 
     show() {
@@ -100,17 +105,27 @@ export class MinimapManager {
             ctx.stroke();
         }
 
-        let rotY = 0;
-        if (this.gameEngine.localPlayerId && entities[this.gameEngine.localPlayerId]) {
-            rotY = entities[this.gameEngine.localPlayerId].rotation.y;
+        // --- プレイヤーの向き計算 (座標差分ベース) ---
+        // モデルの回転(mesh.rotation)はビルボードで上書きされるため使用しない
+        const dx = px - this.lastPx;
+        const dz = pz - this.lastPz;
+        const distSq = dx * dx + dz * dz;
+
+        // 一定以上移動していれば向きを更新
+        if (distSq > 0.0001) {
+            // atan2(dx, -dz) で Canvas座標系(0=上, CW) に合わせた角度を算出
+            // -dz: 3DのZ増加(手前)はCanvasのY増加(下)に対応するため反転
+            this.lastRot = Math.atan2(dx, -dz);
+            this.lastPx = px;
+            this.lastPz = pz;
         }
 
         ctx.translate(radius, radius);
-        ctx.rotate(-rotY); 
+        ctx.rotate(this.lastRot); 
 
         ctx.fillStyle = '#FF0000';
         ctx.beginPath();
-        ctx.moveTo(0, -8);
+        ctx.moveTo(0, -8); // 上向きの矢印
         ctx.lineTo(6, 5);
         ctx.lineTo(0, 2);
         ctx.lineTo(-6, 5);

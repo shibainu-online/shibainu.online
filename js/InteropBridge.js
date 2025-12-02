@@ -45,9 +45,13 @@ export class InteropBridge {
         };
 
         window.VisualEntityInterop = {
-            updateEntity: (id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed, modelType, modelDataId) => {
+            // ★修正: 引数リストを拡張 (Scale, Rotations, Attributes)
+            updateEntity: (id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed, modelType, modelDataId, primitiveType, scale, rx, ry, rz, attrs) => {
                 if (this.gameEngine && this.gameEngine.visualEntityManager) {
-                    this.gameEngine.visualEntityManager.updateEntity(id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed, modelType, modelDataId);
+                    this.gameEngine.visualEntityManager.updateEntity(
+                        id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed, 
+                        modelType, modelDataId, primitiveType, scale, rx, ry, rz, attrs
+                    );
                 }
             },
             removeEntity: (id) => {
@@ -57,11 +61,6 @@ export class InteropBridge {
             }
         };
 
-        // Player Control
-        window.SyncLocalPosition = (x, y, z) => {
-            if (this.gameEngine) this.gameEngine.warpLocalPlayer(x, y, z);
-        };
-        
         window.renderBox = (hex) => {
             if(this.gameEngine && this.gameEngine.renderBox) this.gameEngine.renderBox(hex);
         };

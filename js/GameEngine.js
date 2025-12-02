@@ -75,7 +75,8 @@ export class GameEngine {
         this.scene.add(dirLight);
 
         this.terrainManager = new TerrainManager(this.scene, 32);
-        this.visualEntityManager = new VisualEntityManager(this.scene, this.terrainManager);
+        // ★修正: VisualEntityManagerにカメラを渡す
+        this.visualEntityManager = new VisualEntityManager(this.scene, this.terrainManager, this.camera);
         this.inputManager = new InputManager(canvas, this.camera, this.terrainManager);
         this.inputManager.setActive(true);
         this.minimapManager = new MinimapManager(this);
