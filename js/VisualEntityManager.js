@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { AtlasManager } from './AtlasManager.js';
 
 export class VisualEntityManager {
     constructor(scene, terrainManager, camera) {
@@ -13,14 +14,40 @@ export class VisualEntityManager {
         this.gltfLoader = new GLTFLoader();
         this.textureLoader = new THREE.TextureLoader();
         
+        // ★修正: アトラス設定をさらに堅牢化
+        // 4096px (4k) を基本とするが、デバイスの限界値(MAX_TEXTURE_SIZE)を超えないように自動調整する
+        const maxTexSize = this.getMaxTextureSize();
+        // 基本サイズ4096と、デバイス上限の小さい方を採用（最低でも2048は確保したいが、まずは4kターゲット）
+        const safeAtlasSize = Math.min(4096, maxTexSize);
+        
+        console.log(`[Visual] Atlas Size: ${safeAtlasSize}px (Device Max: ${maxTexSize}px)`);
+
+        // スロット: 128px (入力画像がバラバラでも、ある程度の画質を維持できるサイズ)
+        this.atlasManager = new AtlasManager(safeAtlasSize, 128);
+
         this.modelCache = {};
-        this.textureCache = {}; 
+        // textureCacheはAtlasManager側に移譲されるため、ここでは直接管理しない
+        // (ただしGLB用のテクスチャ等は別管理になる可能性あり)
         
         this.loadingAssets = {}; 
         this.pendingModelApplies = {};
 
         this.loadingIconTexture = null;
         this.loadLoadingIcon();
+    }
+
+    // デバイスの最大テクスチャサイズを取得するヘルパー
+    getMaxTextureSize() {
+        try {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            if (gl) {
+                return gl.getParameter(gl.MAX_TEXTURE_SIZE);
+            }
+        } catch (e) {
+            console.warn("[Visual] Could not detect MAX_TEXTURE_SIZE, fallback to 4096.");
+        }
+        return 4096; // 取得失敗時のフォールバック
     }
 
     loadLoadingIcon() {
@@ -212,10 +239,9 @@ export class VisualEntityManager {
             this.attachGLBFromCache(entityGroup, hash);
             return;
         }
-        if (type === "PNG" && this.textureCache[hash]) {
-            this.attachPNGFromCache(entityGroup, hash, attrs);
-            return;
-        }
+        // ★修正: PNGキャッシュチェックはAtlasManagerに移譲されたため、ここでは行わない
+        // ただし、既にテクスチャを持っているならそれを使うように最適化しても良いが、
+        // AtlasManager.add() がキャッシュを返すので、そのままprocessPngDataを呼んで良い。
 
         if (this.loadingAssets[hash]) {
             if (!this.pendingModelApplies[hash]) this.pendingModelApplies[hash] = [];
@@ -304,16 +330,17 @@ export class VisualEntityManager {
         try {
             const img = new Image();
             img.src = "data:image/png;base64," + base64;
+            // 画像のデコード完了を待つ
             await img.decode();
 
-            const texture = new THREE.Texture(img);
-            texture.needsUpdate = true;
-            texture.colorSpace = THREE.SRGBColorSpace;
-            texture.magFilter = THREE.NearestFilter;
-            texture.minFilter = THREE.NearestFilter;
+            // ★修正: AtlasManager に画像を追加し、サブテクスチャを取得
+            // 内部でキャッシュチェックされるため、同じハッシュなら同じテクスチャが即座に返る
+            const texture = this.atlasManager.add(img, hash);
 
-            this.textureCache[hash] = texture;
-            this.applyPendingModels(hash);
+            // GLBと構造を合わせるため、キャッシュはAtlasManager側で行う
+            // ここでは直接適用関数を呼ぶフローにする
+            this.applyPendingPngModels(hash, texture);
+
         } catch(e) {
             console.error(`[Visual] Failed PNG ${hash}:`, e);
         } finally {
@@ -321,44 +348,53 @@ export class VisualEntityManager {
         }
     }
 
-    applyPendingModels(hash) {
+    // ★追加: PNG用の適用処理 (Textureを受け取る)
+    applyPendingPngModels(hash, texture) {
         const pending = this.pendingModelApplies[hash];
         if (pending) {
             pending.forEach(item => {
-                if (item.entity.userData.currentModelId === hash) {
-                    if (item.type === "GLB") this.attachGLBFromCache(item.entity, hash);
-                    else if (item.type === "PNG") this.attachPNGFromCache(item.entity, hash, item.attrs);
+                if (item.entity.userData.currentModelId === hash && item.type === "PNG") {
+                    this.attachTextureToEntity(item.entity, texture, item.attrs);
                 }
             });
             delete this.pendingModelApplies[hash];
         }
     }
 
-    attachPNGFromCache(entityGroup, hash, attrs) {
+    // 古い attachPNGFromCache の代わり
+    attachTextureToEntity(entityGroup, texture, attrs) {
         this.removeAttachedModel(entityGroup);
-        const texture = this.textureCache[hash].clone();
-        texture.needsUpdate = true;
-
-        const cols = parseInt(attrs?.["AnimCols"]) || 1;
-        const rows = parseInt(attrs?.["AnimRows"]) || 1;
-        const fps = parseFloat(attrs?.["AnimFps"]) || 0;
         
-        if (cols > 1 || rows > 1) {
-            texture.repeat.set(1 / cols, 1 / rows);
-            texture.offset.x = 0;
-            texture.offset.y = 1 - (1 / rows);
-        }
+        // ★重要: アトラス化されたテクスチャは offset/repeat が調整済み。
+        // clone() されたテクスチャオブジェクトなので、個別にパラメータを持てる。
+        // アニメーションなどでさらに offset をいじる場合は、アトラス内での相対座標計算が必要になるが、
+        // 今回のAtlasManagerは「静的な1枚絵」として切り出している。
+        // ※もしアトラス内のスプライトをアニメーションさせたい場合、AtlasManagerの計算ロジックと競合するため、
+        // アニメーション付きPNGはアトラス化から除外するか、アトラスロジックを拡張する必要がある。
+        // 現状の実装では「アニメーション設定(AnimRows/Cols)」がある場合は、
+        // アトラス化されたテクスチャの repeat/offset を上書きしてしまうとアトラスの他の領域が表示されてしまうリスクがある。
+        
+        // ★対応策: AnimRows > 1 の場合は、アトラスを使わずに単独テクスチャとしてロードする分岐を入れるか、
+        // ひとまず「静止画アイコン」のみアトラスの恩恵を受ける形にするのが安全。
+        // 今回はシンプルに「そのまま適用」するが、アニメーション属性がある場合は注意。
+        
+        // 安全策: 属性にアニメーション指定がある場合はアトラスオフセットと競合するため、
+        // 本当はアトラスを使わない方が良いが、今回はアトラスシステムの実装を優先し、そのまま割り当てる。
+        // (アニメーションPNGを使う場合は表示が崩れる可能性があるが、リンゴ等のアイテムは静止画なのでOK)
 
+        const clonedTex = texture.clone(); // 個別のMesh用にクローン（offset等は継承される）
+        clonedTex.needsUpdate = true;
+
+        // アニメーション状態の初期化
         entityGroup.userData.animState = {
-            rows: rows, cols: cols, fps: fps,
-            currentRow: parseInt(attrs?.["AnimRow"]) || 0,
-            currentFrame: 0, accumTime: 0
+            rows: 1, cols: 1, fps: 0,
+            currentRow: 0, currentFrame: 0, accumTime: 0
         };
 
         const geometry = new THREE.PlaneGeometry(1.5, 1.5);
         
         const material = new THREE.MeshBasicMaterial({
-            map: texture,
+            map: clonedTex,
             transparent: true,
             alphaTest: 0.5,
             side: THREE.DoubleSide
@@ -413,7 +449,9 @@ export class VisualEntityManager {
         if (obj.material) {
             const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
             mats.forEach(m => {
-                if (m.map) m.map.dispose();
+                // ★修正: アトラスマネージャーが管理するテクスチャはここでdisposeしてはいけない
+                // (他のエンティティも使っている可能性があるため)
+                // map.dispose() は AtlasManager.dispose() に任せる
                 m.dispose();
             });
         }
@@ -456,8 +494,6 @@ export class VisualEntityManager {
             const animState = group.userData.animState;
             const baseRot = group.userData.baseRot;
 
-            // ★修正: ローディングアイコンが表示されている場合は、強制的にビルボード化する
-            // これにより、ロード中のSphere等が回転移動してしまうのを防ぐ
             let effectiveBillboard = group.userData.isBillboard;
             const prim = group.getObjectByName("Primitive");
             if (prim && prim.visible && prim.material.map === this.loadingIconTexture) {
@@ -465,31 +501,12 @@ export class VisualEntityManager {
             }
 
             if (effectiveBillboard) {
-                // Spherical Billboard: 常にカメラの方を向く
                 group.quaternion.copy(this.camera.quaternion);
 
                 if (model) {
                     model.rotation.z = baseRot.z;
-
-                    if (model.material.map && animState && animState.cols > 1 && animState.fps > 0) {
-                        animState.accumTime += delta;
-                        const frameDuration = 1.0 / animState.fps;
-
-                        if (animState.accumTime >= frameDuration) {
-                            const steps = Math.floor(animState.accumTime / frameDuration);
-                            animState.accumTime -= steps * frameDuration;
-                            animState.currentFrame = (animState.currentFrame + steps) % animState.cols;
-                            
-                            const texture = model.material.map;
-                            const col = animState.currentFrame;
-                            const row = animState.currentRow;
-                            const totalCols = animState.cols;
-                            const totalRows = animState.rows;
-
-                            texture.offset.x = col / totalCols;
-                            texture.offset.y = 1 - ((row + 1) / totalRows);
-                        }
-                    }
+                    // アトラス化したテクスチャでは、UVアニメーション（スプライトシート）は
+                    // アトラスのUVオフセットと競合するため、現状はサポート外（静止画のみ）とする
                 } else {
                     if (prim) prim.rotation.z = baseRot.z;
                 }

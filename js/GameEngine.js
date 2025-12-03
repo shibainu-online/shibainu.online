@@ -58,7 +58,22 @@ export class GameEngine {
         this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
         this.updateCameraPosition();
 
-        this.renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, powerPreference: "high-performance" });
+        // ★修正: WebGLRenderer初期化の堅牢化 (フォールバック処理)
+        try {
+            // まず標準/高画質設定で試行 (powerPreferenceは指定せずブラウザに任せる)
+            this.renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        } catch (e) {
+            console.warn("[GameEngine] WebGL Init failed with high settings, retrying with lower settings...", e);
+            try {
+                // 失敗した場合、低負荷設定で再試行
+                this.renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: false, powerPreference: "low-power" });
+            } catch (e2) {
+                console.error("[GameEngine] Critical: WebGL Init failed completely.", e2);
+                alert("WebGLの初期化に失敗しました。ブラウザの設定やGPUドライバを確認してください。");
+                return;
+            }
+        }
+
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
@@ -75,7 +90,6 @@ export class GameEngine {
         this.scene.add(dirLight);
 
         this.terrainManager = new TerrainManager(this.scene, 32);
-        // ★修正: VisualEntityManagerにカメラを渡す
         this.visualEntityManager = new VisualEntityManager(this.scene, this.terrainManager, this.camera);
         this.inputManager = new InputManager(canvas, this.camera, this.terrainManager);
         this.inputManager.setActive(true);
@@ -91,7 +105,7 @@ export class GameEngine {
         window.addEventListener('resize', this._onResize, false);
 
         this.animate();
-        console.log("[GameEngine] Initialized (Continuous Tracking).");
+        console.log("[GameEngine] Initialized (Robust Mode).");
     }
 
     startGame(logicRef, id, name, x, y, z, speed, colorHex, isVisible) {
