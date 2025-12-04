@@ -8,7 +8,13 @@ export class InteropBridge {
 
     setupExports() {
         window.initNetwork = (ref, networkId, config) => {
-            if (window.networkManager) window.networkManager.init(ref, networkId, config);
+            // ★追加: ネットワークIDをアセットマネージャーにも伝達し、DBを切り替える
+            if (window.assetManager) {
+                window.assetManager.setNetworkId(networkId);
+            }
+            if (window.networkManager) {
+                window.networkManager.init(ref, networkId, config);
+            }
         };
 
         window.StartGame = (logicRef, id, name, x, y, z, speed, colorHex, isVisible) => {
@@ -26,7 +32,6 @@ export class InteropBridge {
         window.NetworkInterop = {
             addSignalingUrl: (url) => { if (window.networkManager) window.networkManager.addSignalingUrl(url); },
             setForceLocal: (enabled) => { if (window.networkManager) window.networkManager.setForceLocal(enabled); },
-            // ★追加: ピア数取得
             getPeerCount: () => { return window.networkManager ? window.networkManager.getPeerCount() : 0; },
             restart: () => { 
                 console.warn("Restart requested via Interop.");
@@ -44,7 +49,6 @@ export class InteropBridge {
                     this.gameEngine.terrainManager.loadChunk(gx, gz, heightMap);
                 }
             },
-            // アンロード用のブリッジ関数
             unloadChunk: (gx, gz) => {
                 if (this.gameEngine && this.gameEngine.terrainManager) {
                     this.gameEngine.terrainManager.unloadChunk(gx, gz);
@@ -53,7 +57,6 @@ export class InteropBridge {
         };
 
         window.VisualEntityInterop = {
-            // 引数リストを拡張 (Scale, Rotations, Attributes)
             updateEntity: (id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed, modelType, modelDataId, primitiveType, scale, rx, ry, rz, attrs) => {
                 if (this.gameEngine && this.gameEngine.visualEntityManager) {
                     this.gameEngine.visualEntityManager.updateEntity(

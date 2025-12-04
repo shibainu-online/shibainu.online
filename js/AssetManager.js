@@ -1,24 +1,51 @@
 // LocalStorageの代わりにIndexedDBを使用するアセット管理クラス
 // Phase 10: Integrity Check, Metabolism (LRU), & Self-Healing
+// Phase 9.9.2: Network Isolation Support
 
 export class AssetManager {
     constructor() {
-        this.dbName = 'ShibainuAssetsDB';
+        this.baseDbName = 'ShibainuAssetsDB';
+        this.currentDbName = ''; // setNetworkIdで決定
         this.storeName = 'assets';
-        this.version = 2; // Phase 10: Schema Update for Metabolism
+        this.version = 2;
         this.db = null;
-        this.initPromise = this.initDB();
         
-        this.CHUNK_SIZE = 1024 * 256; // 256KB per chunk
-        this.tempChunks = {}; // 再構築中のチャンクキャッシュ
-
-        // Metabolism Config
-        this.MAX_ITEMS = 500; // 最大保存ファイル数
+        // 初期化待機用プロミス
+        this._initResolver = null;
+        this.initPromise = new Promise((resolve) => {
+            this._initResolver = resolve;
+        });
+        
+        this.CHUNK_SIZE = 1024 * 256;
+        this.tempChunks = {};
+        this.MAX_ITEMS = 500;
     }
 
-    async initDB() {
+    // ネットワークIDを設定し、DBを初期化/切り替えする
+    async setNetworkId(networkId) {
+        // IDサニタイズ
+        const safeId = networkId.replace(/[^a-zA-Z0-9_-]/g, "");
+        const newDbName = `${this.baseDbName}_${safeId}`;
+
+        if (this.currentDbName === newDbName && this.db) return; // 変更なし
+
+        // 既存DBがあれば閉じる
+        if (this.db) {
+            this.db.close();
+            this.db = null;
+        }
+
+        this.currentDbName = newDbName;
+        console.log(`[AssetManager] Switching DB to: ${this.currentDbName}`);
+
+        // DBオープン（initPromiseを再生成するのではなく、完了を待つ形にするが、
+        // 初回ロード時はinitPromiseが待たれているので、そこでresolveする）
+        await this._openDB();
+    }
+
+    async _openDB() {
         return new Promise((resolve, reject) => {
-            const request = indexedDB.open(this.dbName, this.version);
+            const request = indexedDB.open(this.currentDbName, this.version);
 
             request.onupgradeneeded = (event) => {
                 const db = event.target.result;
@@ -28,8 +55,6 @@ export class AssetManager {
                 } else {
                     store = request.transaction.objectStore(this.storeName);
                 }
-
-                // Phase 10: Create Index for LRU
                 if (!store.indexNames.contains('lastAccess')) {
                     store.createIndex('lastAccess', 'lastAccess', { unique: false });
                 }
@@ -37,7 +62,13 @@ export class AssetManager {
 
             request.onsuccess = (event) => {
                 this.db = event.target.result;
-                console.log("[AssetManager] IndexedDB Initialized.");
+                console.log(`[AssetManager] IndexedDB (${this.currentDbName}) Ready.`);
+                
+                // 初回初期化待ちを解除
+                if (this._initResolver) {
+                    this._initResolver();
+                    this._initResolver = null; // 次回以降は呼ばない
+                }
                 resolve();
             };
 
@@ -48,14 +79,14 @@ export class AssetManager {
         });
     }
 
-    // Phase 10: Metabolism & Metadata Wrapper
     async saveAsset(hash, data) {
         await this.initPromise;
+        if (!this.db) await this._openDB(); // 安全策
+
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readwrite');
             const store = transaction.objectStore(this.storeName);
 
-            // 1. 容量チェック (Metabolism)
             const countReq = store.count();
             countReq.onsuccess = () => {
                 if (countReq.result >= this.MAX_ITEMS) {
@@ -63,44 +94,36 @@ export class AssetManager {
                 }
             };
 
-            // 2. ラッパー作成 (Metadata)
             const record = {
                 content: data,
                 lastAccess: Date.now()
             };
 
-            // putはキー(hash)を指定して保存
             const request = store.put(record, hash);
 
-            request.onsuccess = () => {
-                const size = (data instanceof Blob) ? data.size : data.length;
-                // console.log(`[AssetManager] Saved: ${hash.substring(0, 8)}... (${size} bytes)`);
-                resolve(true);
-            };
+            request.onsuccess = () => resolve(true);
             request.onerror = () => reject(request.error);
         });
     }
 
-    // 古いデータの削除 (LRU Strategy)
     performCleanup(store) {
-        // lastAccessインデックスを使って古い順に検索
         const index = store.index('lastAccess');
-        const cursorReq = index.openKeyCursor(); // キーのみ取得で高速化
-
+        const cursorReq = index.openKeyCursor();
         cursorReq.onsuccess = (e) => {
             const cursor = e.target.result;
             if (cursor) {
                 console.log(`[AssetManager] Metabolism: Removing old asset ${cursor.primaryKey}`);
                 store.delete(cursor.primaryKey);
-                // 1つ消したら終了（頻繁に呼ばれるため少しずつ消せば良い）
             }
         };
     }
 
     async loadAsset(hash) {
         await this.initPromise;
+        if (!this.db) return null;
+
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.storeName], 'readwrite'); // 更新のためreadwrite
+            const transaction = this.db.transaction([this.storeName], 'readwrite');
             const store = transaction.objectStore(this.storeName);
             const request = store.get(hash);
 
@@ -109,19 +132,14 @@ export class AssetManager {
                 if (!result) { resolve(null); return; }
 
                 let content = result;
-                
-                // Phase 10: Unwrap Metadata & Update LastAccess
                 if (result.content && result.lastAccess) {
                     content = result.content;
-                    // アクセス時刻を更新して再保存 (非同期で良い)
                     result.lastAccess = Date.now();
                     store.put(result, hash); 
                 } else {
-                    // 旧形式データのマイグレーション (読み込みついでに形式変換)
                     this.saveAsset(hash, result);
                 }
                 
-                // Blobの場合はBase64に変換して返す
                 if (content instanceof Blob) {
                     const reader = new FileReader();
                     reader.onload = () => {
@@ -140,24 +158,22 @@ export class AssetManager {
 
     async hasAsset(hash) {
         await this.initPromise;
+        if (!this.db) return false;
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readonly');
             const store = transaction.objectStore(this.storeName);
             const request = store.count(hash);
-
-            request.onsuccess = () => {
-                resolve(request.result > 0);
-            };
+            request.onsuccess = () => resolve(request.result > 0);
             request.onerror = () => reject(request.error);
         });
     }
 
     async deleteAsset(hash) {
         await this.initPromise;
+        if (!this.db) return;
         const transaction = this.db.transaction([this.storeName], 'readwrite');
         const store = transaction.objectStore(this.storeName);
         store.delete(hash);
-        console.warn(`[AssetManager] Deleted asset: ${hash}`);
     }
 
     // --- Helper ---
@@ -165,9 +181,7 @@ export class AssetManager {
         const binaryString = window.atob(base64);
         const len = binaryString.length;
         const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-        }
+        for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
         return bytes;
     }
 
@@ -181,9 +195,9 @@ export class AssetManager {
     }
 
     // --- P2P Swarm Support ---
-
     async getAssetMetadata(hash) {
         await this.initPromise;
+        if (!this.db) return null;
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readonly');
             const store = transaction.objectStore(this.storeName);
@@ -192,23 +206,10 @@ export class AssetManager {
             request.onsuccess = async () => {
                 const result = request.result;
                 if (!result) { resolve(null); return; }
-
-                let data = result;
-                if (result.content) data = result.content; // Unwrap
-
-                let size = 0;
-                if (data instanceof Blob) {
-                    size = data.size;
-                } else {
-                    size = data.length; 
-                }
-                
+                let data = result.content || result;
+                let size = (data instanceof Blob) ? data.size : data.length;
                 const chunkCount = Math.ceil(size / this.CHUNK_SIZE);
-                resolve({
-                    hash: hash,
-                    size: size,
-                    chunkCount: chunkCount
-                });
+                resolve({ hash: hash, size: size, chunkCount: chunkCount });
             };
             request.onerror = () => reject(request.error);
         });
@@ -216,6 +217,7 @@ export class AssetManager {
 
     async getChunk(hash, index) {
         await this.initPromise;
+        if (!this.db) return null;
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readonly');
             const store = transaction.objectStore(this.storeName);
@@ -224,10 +226,7 @@ export class AssetManager {
             request.onsuccess = async () => {
                 const result = request.result;
                 if (!result) { resolve(null); return; }
-
-                let data = result;
-                if (result.content) data = result.content; // Unwrap
-
+                let data = result.content || result;
                 const start = index * this.CHUNK_SIZE;
                 
                 if (data instanceof Blob) {
@@ -237,15 +236,13 @@ export class AssetManager {
                     resolve(chunkBase64);
                 } else {
                     const end = Math.min(start + this.CHUNK_SIZE, data.length);
-                    const chunkData = data.substring(start, end);
-                    resolve(chunkData);
+                    resolve(data.substring(start, end));
                 }
             };
             request.onerror = () => reject(request.error);
         });
     }
 
-    // Phase 10: Integrity Check
     async receiveChunk(hash, index, total, base64Data) {
         if (!this.tempChunks[hash]) {
             this.tempChunks[hash] = {
@@ -264,30 +261,21 @@ export class AssetManager {
         }
 
         if (entry.receivedCount >= total) {
-            // 全チャンク結合
             const blob = new Blob(entry.parts, { type: 'application/octet-stream' });
-            
-            // --- Integrity Check ---
             try {
                 const buffer = await blob.arrayBuffer();
                 const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
                 const hashArray = Array.from(new Uint8Array(hashBuffer));
                 const calculatedHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-                // ハッシュ不一致チェック (大文字小文字を区別しない)
                 if (calculatedHash.toLowerCase() !== hash.toLowerCase()) {
-                    console.error(`[AssetManager] Integrity Check Failed! Expected: ${hash}, Got: ${calculatedHash}`);
-                    // メモリ解放
-                    entry.parts = null; 
+                    console.error(`[AssetManager] Integrity Check Failed!`);
                     delete this.tempChunks[hash];
                     return { status: 'corrupted' };
                 }
 
-                // 合格なら保存
                 await this.saveAsset(hash, blob);
                 console.log(`[AssetManager] Asset Verified & Saved: ${hash}`);
-                
-                entry.parts = null; 
                 delete this.tempChunks[hash];
                 
                 if (window.gameEngine && window.gameEngine.visualEntityManager) {
@@ -303,11 +291,9 @@ export class AssetManager {
         return { status: 'incomplete' }; 
     }
 
-    // Phase 10: Self-Check Logic (The Osekkai Protocol)
-    // 外部から「お前のデータ壊れてるぞ」と言われた時に実行
     async verifyLocalAsset(hash) {
-        console.log(`[AssetManager] Self-verifying asset: ${hash}...`);
         await this.initPromise;
+        if (!this.db) return;
         
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readwrite');
@@ -316,16 +302,12 @@ export class AssetManager {
 
             request.onsuccess = async () => {
                 const result = request.result;
-                if (!result) { console.log("[AssetManager] Asset not found locally."); resolve(); return; }
-
-                let content = result;
-                if (result.content) content = result.content;
-
+                if (!result) { resolve(); return; }
+                let content = result.content || result;
                 let buffer;
                 if (content instanceof Blob) {
                     buffer = await content.arrayBuffer();
                 } else {
-                    // String data fallback (less likely for assets but possible)
                     const enc = new TextEncoder();
                     buffer = enc.encode(content);
                 }
@@ -335,10 +317,8 @@ export class AssetManager {
                 const calculatedHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
                 if (calculatedHash.toLowerCase() !== hash.toLowerCase()) {
-                    console.warn(`[AssetManager] SELF-CHECK FAILED. I am corrupted. Deleting ${hash}.`);
+                    console.warn(`[AssetManager] SELF-CHECK FAILED. Deleting ${hash}.`);
                     this.deleteAsset(hash);
-                } else {
-                    console.log(`[AssetManager] Self-check passed for ${hash}. I am clean.`);
                 }
                 resolve();
             };
@@ -346,25 +326,16 @@ export class AssetManager {
         });
     }
 
-    // --- JS Import (10MB Bypass) ---
     async importFromInput(inputId) {
         const input = document.getElementById(inputId);
         if (!input || !input.files || input.files.length === 0) return null;
-
         const file = input.files[0];
-        console.log(`[AssetManager] Importing file via JS: ${file.name} (${file.size} bytes)`);
-
         try {
             const arrayBuffer = await file.arrayBuffer();
-            
             const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
             const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-
-            console.log(`[AssetManager] Computed SHA-256: ${hashHex}`);
-
             await this.saveAsset(hashHex, file);
-            
             return hashHex;
         } catch (e) {
             console.error("[AssetManager] Import failed:", e);
@@ -374,3 +345,4 @@ export class AssetManager {
 }
 
 window.assetManager = new AssetManager();
+// 初期化は initNetwork 等で setNetworkId が呼ばれるまで保留される
