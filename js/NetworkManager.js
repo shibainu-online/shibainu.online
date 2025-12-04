@@ -12,7 +12,6 @@ export class NetworkManager {
             "https://close-creation.ganjy.net/matching/signaling.php"
         ];
         
-        // NEW: Registry URL
         this.registryUrl = "https://close-creation.ganjy.net/matching/turn_registry.php";
 
         this.currentSignalingUrl = null;
@@ -35,6 +34,12 @@ export class NetworkManager {
         this.maxRetries = 20;
         
         this.activeRequests = {};
+
+        // Phase 9.7: Dynamic Connection Throttling
+        this.maxPeers = 50; 
+
+        // Phase 10: Bad Peer Tracker
+        this.badPeerStrikes = {};
     }
 
     init(dotNetRef, networkId, config) {
@@ -58,33 +63,43 @@ export class NetworkManager {
             this.isActive = false;
         }
 
-        // ★追加: 接続前にレジストリからTURNリストを取得
-        this.fetchPublicTurnServers().then(() => {
-            this.connect();
-        });
+        this.fetchPublicTurnServers();
+        this.connect();
     }
 
     async fetchPublicTurnServers() {
         if (this.forceLocal) return;
         try {
-            console.log("[Network] Checking Public TURN Registry...");
+            console.log("[Network] Checking Public TURN Registry (Async)...");
             const res = await fetch(this.registryUrl);
             if (res.ok) {
                 const servers = await res.json();
                 if (Array.isArray(servers) && servers.length > 0) {
                     console.log(`[Network] Found ${servers.length} public TURN servers!`);
-                    // 既存のSTUN設定に、取得したTURN設定をマージする
+                    
+                    const currentStuns = this.rtcConfig.iceServers.filter(s => {
+                        const u = (typeof s.urls === 'string') ? s.urls : s.urls[0];
+                        return !u.startsWith('turn:');
+                    });
+
                     this.rtcConfig.iceServers = [
-                        ...this.rtcConfig.iceServers.filter(s => !s.urls.toString().startsWith('turn:')), // 重複防止で既存TURN削除
+                        ...currentStuns,
                         ...servers
                     ];
+                    console.log("[Network] RTC Configuration updated with Registry TURNs.");
                 } else {
                     console.log("[Network] No public TURN servers active.");
                 }
             }
         } catch (e) {
-            console.warn("[Network] Registry check failed:", e);
+            console.warn("[Network] Registry check failed (Non-fatal):", e);
         }
+    }
+
+    capPeerCount() {
+        const current = this.getPeerCount();
+        this.maxPeers = Math.max(5, current);
+        console.log(`[Network] Peer limit capped to: ${this.maxPeers}`);
     }
 
     setTurnUrl(url) {
@@ -92,9 +107,8 @@ export class NetworkManager {
         console.log(`[Network] Overwriting TURN URL to: ${url}`);
         
         const newIceServers = this.rtcConfig.iceServers.filter(server => {
-            if (typeof server.urls === 'string') return !server.urls.startsWith('turn:');
-            if (Array.isArray(server.urls)) return !server.urls.some(u => u.startsWith('turn:'));
-            return true;
+            const u = (typeof server.urls === 'string') ? server.urls : (Array.isArray(server.urls) ? server.urls[0] : '');
+            return !u.startsWith('turn:');
         });
 
         newIceServers.push({
@@ -134,34 +148,25 @@ export class NetworkManager {
         }
     }
 
-    // ■ NBLM Fix: 接続ロジックの最適化
-    // 接続に失敗したサーバーをリストの末尾に移動させる
     async findSignalingServerWithRetry() {
         this.retryCount = 0;
         
-        // リトライ回数分ループ（最大20回）
         while (this.retryCount < this.maxRetries && this.isActive) {
             if (this.forceLocal) return null;
 
-            // リストの先頭（最高優先度）を取得
             const url = this.signalingUrls[0];
             
             try {
-                // タイムアウト付きでPing
                 const controller = new AbortController();
                 const id = setTimeout(() => controller.abort(), 3000);
                 const res = await fetch(`${url}?room=ping`, { method: 'GET', signal: controller.signal });
                 clearTimeout(id);
                 
                 if (res.ok) {
-                    // 成功: このURLを採用し、リスト順序は維持する（優先度キープ）
                     return url;
                 }
-            } catch (e) { 
-                // 失敗
-            }
+            } catch (e) { }
 
-            // 失敗した場合: このURLをリストの末尾に回す（優先度ダウン）
             this.signalingUrls.push(this.signalingUrls.shift());
 
             this.retryCount++;
@@ -187,9 +192,10 @@ export class NetworkManager {
 
     setForceLocal(enabled) { this.forceLocal = enabled; }
 
-    onDataReceived(data) {
+    // SenderIDが必要なため、引数を拡張
+    onDataReceived(data, senderId) {
         if (data.startsWith("CMD_ASSET_")) {
-            this.handleAssetMessage(data);
+            this.handleAssetMessage(data, senderId);
             return;
         }
 
@@ -227,7 +233,8 @@ export class NetworkManager {
 
     setupBroadcastChannel() {
         this.broadcastChannel = new BroadcastChannel(`game_mesh_${this.networkId}`);
-        this.broadcastChannel.onmessage = (e) => this.onDataReceived(e.data);
+        // BroadcastChannelにはsenderIdの概念がないので仮ID
+        this.broadcastChannel.onmessage = (e) => this.onDataReceived(e.data, "LOCAL_TAB");
     }
 
     async startSignalingLoop() {
@@ -282,9 +289,15 @@ export class NetworkManager {
         if (msg.sender === this.myId) return;
         const targetId = msg.sender;
 
+        if (msg.type === 'join' || msg.type === 'offer') {
+            if (this.getPeerCount() >= this.maxPeers && !this.peers[targetId]) {
+                return;
+            }
+        }
+
         switch (msg.type) {
             case 'broadcast':
-                if (msg.content) this.onDataReceived(msg.content);
+                if (msg.content) this.onDataReceived(msg.content, msg.sender);
                 break;
             case 'join':
                 if (!this.peers[targetId]) {
@@ -331,6 +344,13 @@ export class NetworkManager {
 
     async connectToPeer(peerId, isInitiator, offerSdp = null) {
         if (this.peers[peerId]) return;
+        
+        // Ban Check
+        if (this.badPeerStrikes[peerId] && this.badPeerStrikes[peerId] > 3) {
+            console.warn(`[Network] Ignoring banned peer: ${peerId}`);
+            return;
+        }
+
         const pc = new RTCPeerConnection(this.rtcConfig);
         this.peers[peerId] = pc;
 
@@ -365,16 +385,14 @@ export class NetworkManager {
             this.messageQueue.forEach(msg => dc.send(msg));
             this.messageQueue = [];
         };
-        dc.onmessage = (e) => this.onDataReceived(e.data);
+        dc.onmessage = (e) => this.onDataReceived(e.data, peerId);
         dc.onclose = () => {
             delete this.peers[peerId];
             delete this.dataChannels[peerId];
         };
     }
 
-    // ★追加: 接続中のピア数を返す
     getPeerCount() {
-        // DataChannelが開いているピアのみカウント
         let count = 0;
         for (const id in this.dataChannels) {
             if (this.dataChannels[id].readyState === 'open') count++;
@@ -382,7 +400,7 @@ export class NetworkManager {
         return count;
     }
 
-    // --- P2P Asset Swarm Implementation ---
+    // --- P2P Asset Swarm (Updated Phase 10) ---
 
     requestAsset(hash) {
         if (!window.assetManager) return;
@@ -392,19 +410,21 @@ export class NetworkManager {
         this.broadcast(`CMD_ASSET_REQ_MANIFEST:${hash}`);
     }
 
-    async handleAssetMessage(msg) {
+    async handleAssetMessage(msg, senderId) {
         const parts = msg.split(':');
         const cmd = parts[0];
         const hash = parts[1];
 
+        // 1. マニフェスト要求 (持ってる？)
         if (cmd === "CMD_ASSET_REQ_MANIFEST") {
             if (window.assetManager) {
                 const meta = await window.assetManager.getAssetMetadata(hash);
                 if (meta) {
-                    this.broadcast(`CMD_ASSET_MANIFEST_RESP:${hash}:${meta.chunkCount}`);
+                    this.sendToPeer(senderId, `CMD_ASSET_MANIFEST_RESP:${hash}:${meta.chunkCount}`);
                 }
             }
         }
+        // 2. マニフェスト応答 (持ってるよ、N個あるよ)
         else if (cmd === "CMD_ASSET_MANIFEST_RESP") {
             const count = parseInt(parts[2]);
             if (!window.assetManager) return;
@@ -413,21 +433,48 @@ export class NetworkManager {
                 this.startDownloadingChunks(hash, count);
             }
         }
+        // 3. チャンク要求 (N番目の欠片をくれ)
         else if (cmd === "CMD_ASSET_REQ_CHUNK") {
             const index = parseInt(parts[2]);
             if (window.assetManager) {
                 const chunkData = await window.assetManager.getChunk(hash, index);
                 if (chunkData) {
-                    this.broadcast(`CMD_ASSET_CHUNK_DATA:${hash}:${index}:${parts[3]}:${chunkData}`);
+                    this.sendToPeer(senderId, `CMD_ASSET_CHUNK_DATA:${hash}:${index}:${parts[3]}:${chunkData}`);
                 }
             }
         }
+        // 4. チャンク受信 (これが欠片だ)
         else if (cmd === "CMD_ASSET_CHUNK_DATA") {
             const index = parseInt(parts[2]);
             const total = parseInt(parts[3]);
             const data = parts[4];
             if (window.assetManager) {
-                window.assetManager.receiveChunk(hash, index, total, data);
+                // Phase 10: Integrity verification result check
+                const result = await window.assetManager.receiveChunk(hash, index, total, data);
+                
+                if (result.status === 'corrupted') {
+                    console.warn(`[Swarm] Received corrupted asset ${hash} from ${senderId}. Sending Alert.`);
+                    
+                    // お節介アラート送信
+                    this.sendToPeer(senderId, `CMD_ASSET_INTEGRITY_ALERT:${hash}`);
+                    
+                    // 悪質ピアのストライクカウント増加
+                    if (!this.badPeerStrikes[senderId]) this.badPeerStrikes[senderId] = 0;
+                    this.badPeerStrikes[senderId]++;
+                    
+                    if (this.badPeerStrikes[senderId] > 3) {
+                        console.error(`[Swarm] Peer ${senderId} is toxic (Too many bad chunks). Banning.`);
+                        this.disconnectPeer(senderId);
+                    }
+                }
+            }
+        }
+        // Phase 10: 相互健全化アラート受信 (お前のデータ腐ってるぞ)
+        else if (cmd === "CMD_ASSET_INTEGRITY_ALERT") {
+            console.warn(`[Swarm] Received integrity alert for ${hash}. Verifying local data...`);
+            if (window.assetManager) {
+                // 自己検診を実行
+                await window.assetManager.verifyLocalAsset(hash);
             }
         }
     }
@@ -440,5 +487,27 @@ export class NetworkManager {
                 this.broadcast(`CMD_ASSET_REQ_CHUNK:${hash}:${index}:${count}`);
             }, i * 50);
         });
+    }
+
+    sendToPeer(peerId, msg) {
+        if (this.dataChannels[peerId] && this.dataChannels[peerId].readyState === 'open') {
+            this.dataChannels[peerId].send(msg);
+        } else {
+            // P2Pがない場合はブロードキャストで代用（非効率だが到達はする）
+            // ただし大量のデータは送らないように注意
+            if (!msg.startsWith("CMD_ASSET_CHUNK_DATA")) {
+                this.broadcast(msg);
+            }
+        }
+    }
+
+    disconnectPeer(peerId) {
+        if (this.peers[peerId]) {
+            this.peers[peerId].close();
+            delete this.peers[peerId];
+        }
+        if (this.dataChannels[peerId]) {
+            delete this.dataChannels[peerId];
+        }
     }
 }

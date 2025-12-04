@@ -1,17 +1,19 @@
 // LocalStorageの代わりにIndexedDBを使用するアセット管理クラス
-// P2Pスワーム配信（チャンク分割・再構築）機能 + inputインポート機能
-// ★修正: メモリ最適化版 (Blob使用)
+// Phase 10: Integrity Check, Metabolism (LRU), & Self-Healing
 
 export class AssetManager {
     constructor() {
         this.dbName = 'ShibainuAssetsDB';
         this.storeName = 'assets';
-        this.version = 1;
+        this.version = 2; // Phase 10: Schema Update for Metabolism
         this.db = null;
         this.initPromise = this.initDB();
         
         this.CHUNK_SIZE = 1024 * 256; // 256KB per chunk
         this.tempChunks = {}; // 再構築中のチャンクキャッシュ
+
+        // Metabolism Config
+        this.MAX_ITEMS = 500; // 最大保存ファイル数
     }
 
     async initDB() {
@@ -20,8 +22,16 @@ export class AssetManager {
 
             request.onupgradeneeded = (event) => {
                 const db = event.target.result;
+                let store;
                 if (!db.objectStoreNames.contains(this.storeName)) {
-                    db.createObjectStore(this.storeName);
+                    store = db.createObjectStore(this.storeName);
+                } else {
+                    store = request.transaction.objectStore(this.storeName);
+                }
+
+                // Phase 10: Create Index for LRU
+                if (!store.indexNames.contains('lastAccess')) {
+                    store.createIndex('lastAccess', 'lastAccess', { unique: false });
                 }
             };
 
@@ -38,48 +48,90 @@ export class AssetManager {
         });
     }
 
-    // ★修正: dataはBlobまたはBase64文字列を受け入れる
+    // Phase 10: Metabolism & Metadata Wrapper
     async saveAsset(hash, data) {
         await this.initPromise;
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readwrite');
             const store = transaction.objectStore(this.storeName);
-            const request = store.put(data, hash);
+
+            // 1. 容量チェック (Metabolism)
+            const countReq = store.count();
+            countReq.onsuccess = () => {
+                if (countReq.result >= this.MAX_ITEMS) {
+                    this.performCleanup(store);
+                }
+            };
+
+            // 2. ラッパー作成 (Metadata)
+            const record = {
+                content: data,
+                lastAccess: Date.now()
+            };
+
+            // putはキー(hash)を指定して保存
+            const request = store.put(record, hash);
 
             request.onsuccess = () => {
                 const size = (data instanceof Blob) ? data.size : data.length;
-                console.log(`[AssetManager] Saved: ${hash.substring(0, 8)}... (${size} bytes)`);
+                // console.log(`[AssetManager] Saved: ${hash.substring(0, 8)}... (${size} bytes)`);
                 resolve(true);
             };
             request.onerror = () => reject(request.error);
         });
     }
 
-    // ★修正: 戻り値はBase64文字列であることを保証する (VisualEntityManager互換性のため)
+    // 古いデータの削除 (LRU Strategy)
+    performCleanup(store) {
+        // lastAccessインデックスを使って古い順に検索
+        const index = store.index('lastAccess');
+        const cursorReq = index.openKeyCursor(); // キーのみ取得で高速化
+
+        cursorReq.onsuccess = (e) => {
+            const cursor = e.target.result;
+            if (cursor) {
+                console.log(`[AssetManager] Metabolism: Removing old asset ${cursor.primaryKey}`);
+                store.delete(cursor.primaryKey);
+                // 1つ消したら終了（頻繁に呼ばれるため少しずつ消せば良い）
+            }
+        };
+    }
+
     async loadAsset(hash) {
         await this.initPromise;
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.storeName], 'readonly');
+            const transaction = this.db.transaction([this.storeName], 'readwrite'); // 更新のためreadwrite
             const store = transaction.objectStore(this.storeName);
             const request = store.get(hash);
 
             request.onsuccess = () => {
                 const result = request.result;
+                if (!result) { resolve(null); return; }
+
+                let content = result;
+                
+                // Phase 10: Unwrap Metadata & Update LastAccess
+                if (result.content && result.lastAccess) {
+                    content = result.content;
+                    // アクセス時刻を更新して再保存 (非同期で良い)
+                    result.lastAccess = Date.now();
+                    store.put(result, hash); 
+                } else {
+                    // 旧形式データのマイグレーション (読み込みついでに形式変換)
+                    this.saveAsset(hash, result);
+                }
                 
                 // Blobの場合はBase64に変換して返す
-                if (result instanceof Blob) {
+                if (content instanceof Blob) {
                     const reader = new FileReader();
                     reader.onload = () => {
-                        // Data URL形式 "data:application/octet-stream;base64,..." から
-                        // コンマ以降の純粋なBase64部分のみを抽出する
                         const base64 = reader.result.split(',')[1];
                         resolve(base64);
                     };
                     reader.onerror = () => reject(reader.error);
-                    reader.readAsDataURL(result);
+                    reader.readAsDataURL(content);
                 } else {
-                    // 既に文字列(旧形式)ならそのまま返す
-                    resolve(result); 
+                    resolve(content); 
                 }
             };
             request.onerror = () => reject(request.error);
@@ -87,12 +139,11 @@ export class AssetManager {
     }
 
     async hasAsset(hash) {
-        // Blob対応版loadAssetを経由すると重いため、存在確認は簡易的に行う
         await this.initPromise;
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readonly');
             const store = transaction.objectStore(this.storeName);
-            const request = store.count(hash); // countだけなら高速
+            const request = store.count(hash);
 
             request.onsuccess = () => {
                 resolve(request.result > 0);
@@ -106,9 +157,10 @@ export class AssetManager {
         const transaction = this.db.transaction([this.storeName], 'readwrite');
         const store = transaction.objectStore(this.storeName);
         store.delete(hash);
+        console.warn(`[AssetManager] Deleted asset: ${hash}`);
     }
 
-    // --- Helper for Memory Optimization ---
+    // --- Helper ---
     base64ToUint8Array(base64) {
         const binaryString = window.atob(base64);
         const len = binaryString.length;
@@ -131,8 +183,6 @@ export class AssetManager {
     // --- P2P Swarm Support ---
 
     async getAssetMetadata(hash) {
-        // メタデータ取得のために全データをロードするのはコストが高いが、
-        // Swarm配信元としての役割上やむなし。Blobならメモリ効率は多少マシ。
         await this.initPromise;
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readonly');
@@ -140,14 +190,17 @@ export class AssetManager {
             const request = store.get(hash);
 
             request.onsuccess = async () => {
-                const data = request.result;
-                if (!data) { resolve(null); return; }
+                const result = request.result;
+                if (!result) { resolve(null); return; }
+
+                let data = result;
+                if (result.content) data = result.content; // Unwrap
 
                 let size = 0;
                 if (data instanceof Blob) {
                     size = data.size;
                 } else {
-                    size = data.length; // Base64 string length
+                    size = data.length; 
                 }
                 
                 const chunkCount = Math.ceil(size / this.CHUNK_SIZE);
@@ -162,7 +215,6 @@ export class AssetManager {
     }
 
     async getChunk(hash, index) {
-        // 部分読み出し
         await this.initPromise;
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readonly');
@@ -170,20 +222,20 @@ export class AssetManager {
             const request = store.get(hash);
 
             request.onsuccess = async () => {
-                const data = request.result;
-                if (!data) { resolve(null); return; }
+                const result = request.result;
+                if (!result) { resolve(null); return; }
+
+                let data = result;
+                if (result.content) data = result.content; // Unwrap
 
                 const start = index * this.CHUNK_SIZE;
                 
                 if (data instanceof Blob) {
-                    // Blob.slice() はメモリ効率が良い
                     const end = Math.min(start + this.CHUNK_SIZE, data.size);
                     const chunkBlob = data.slice(start, end);
-                    // 転送用にBase64化して返す
                     const chunkBase64 = await this.blobToBase64(chunkBlob);
                     resolve(chunkBase64);
                 } else {
-                    // 旧形式(String)のフォールバック
                     const end = Math.min(start + this.CHUNK_SIZE, data.length);
                     const chunkData = data.substring(start, end);
                     resolve(chunkData);
@@ -193,7 +245,8 @@ export class AssetManager {
         });
     }
 
-    receiveChunk(hash, index, total, base64Data) {
+    // Phase 10: Integrity Check
+    async receiveChunk(hash, index, total, base64Data) {
         if (!this.tempChunks[hash]) {
             this.tempChunks[hash] = {
                 receivedCount: 0,
@@ -205,31 +258,92 @@ export class AssetManager {
 
         const entry = this.tempChunks[hash];
         if (entry.parts[index] === null) {
-            // ★修正: Base64文字列のまま保持せず、Uint8Array(バイナリ)に即変換して保持する
-            // これによりメモリ使用量を削減 (Base64はバイナリより約33%大きい)
             entry.parts[index] = this.base64ToUint8Array(base64Data);
             entry.receivedCount++;
             entry.lastUpdate = Date.now();
         }
 
         if (entry.receivedCount >= total) {
-            // ★修正: 文字列結合(join)ではなく、Blobを作成して保存する
+            // 全チャンク結合
             const blob = new Blob(entry.parts, { type: 'application/octet-stream' });
             
-            this.saveAsset(hash, blob).then(() => {
-                console.log(`[AssetSwarm] Asset Reassembled & Saved as Blob: ${hash}`);
+            // --- Integrity Check ---
+            try {
+                const buffer = await blob.arrayBuffer();
+                const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+                const hashArray = Array.from(new Uint8Array(hashBuffer));
+                const calculatedHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+                // ハッシュ不一致チェック (大文字小文字を区別しない)
+                if (calculatedHash.toLowerCase() !== hash.toLowerCase()) {
+                    console.error(`[AssetManager] Integrity Check Failed! Expected: ${hash}, Got: ${calculatedHash}`);
+                    // メモリ解放
+                    entry.parts = null; 
+                    delete this.tempChunks[hash];
+                    return { status: 'corrupted' };
+                }
+
+                // 合格なら保存
+                await this.saveAsset(hash, blob);
+                console.log(`[AssetManager] Asset Verified & Saved: ${hash}`);
                 
-                // メモリ解放
                 entry.parts = null; 
                 delete this.tempChunks[hash];
                 
                 if (window.gameEngine && window.gameEngine.visualEntityManager) {
                     window.gameEngine.visualEntityManager.onAssetAvailable(hash);
                 }
-            });
-            return true; 
+                return { status: 'ok' };
+
+            } catch (e) {
+                console.error("[AssetManager] Verification Error:", e);
+                return { status: 'error' };
+            }
         }
-        return false; 
+        return { status: 'incomplete' }; 
+    }
+
+    // Phase 10: Self-Check Logic (The Osekkai Protocol)
+    // 外部から「お前のデータ壊れてるぞ」と言われた時に実行
+    async verifyLocalAsset(hash) {
+        console.log(`[AssetManager] Self-verifying asset: ${hash}...`);
+        await this.initPromise;
+        
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([this.storeName], 'readwrite');
+            const store = transaction.objectStore(this.storeName);
+            const request = store.get(hash);
+
+            request.onsuccess = async () => {
+                const result = request.result;
+                if (!result) { console.log("[AssetManager] Asset not found locally."); resolve(); return; }
+
+                let content = result;
+                if (result.content) content = result.content;
+
+                let buffer;
+                if (content instanceof Blob) {
+                    buffer = await content.arrayBuffer();
+                } else {
+                    // String data fallback (less likely for assets but possible)
+                    const enc = new TextEncoder();
+                    buffer = enc.encode(content);
+                }
+
+                const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+                const hashArray = Array.from(new Uint8Array(hashBuffer));
+                const calculatedHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+                if (calculatedHash.toLowerCase() !== hash.toLowerCase()) {
+                    console.warn(`[AssetManager] SELF-CHECK FAILED. I am corrupted. Deleting ${hash}.`);
+                    this.deleteAsset(hash);
+                } else {
+                    console.log(`[AssetManager] Self-check passed for ${hash}. I am clean.`);
+                }
+                resolve();
+            };
+            request.onerror = () => reject();
+        });
     }
 
     // --- JS Import (10MB Bypass) ---
@@ -243,18 +357,12 @@ export class AssetManager {
         try {
             const arrayBuffer = await file.arrayBuffer();
             
-            // C#互換ハッシュ生成 (fileName + length + firstByte)
-            const firstByte = arrayBuffer.byteLength > 0 ? new Uint8Array(arrayBuffer)[0] : 0;
-            const metaString = file.name + arrayBuffer.byteLength + firstByte;
-            const metaEncoder = new TextEncoder();
-            const metaData = metaEncoder.encode(metaString);
-            
-            const hashBuffer = await crypto.subtle.digest('SHA-256', metaData);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
             const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-            // ★修正: ファイル(Blob)をそのまま保存する (Base64変換を省略)
-            // fileはBlobの一種なのでそのまま渡せる
+            console.log(`[AssetManager] Computed SHA-256: ${hashHex}`);
+
             await this.saveAsset(hashHex, file);
             
             return hashHex;

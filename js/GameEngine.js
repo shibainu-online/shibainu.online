@@ -34,6 +34,10 @@ export class GameEngine {
         
         this.animationFrameId = null;
         this.isDisposed = false;
+
+        // ■ NBLM Fix: Performance Monitor (Op. Valve)
+        this.frameCount = 0;
+        this.timeAccumulator = 0;
     }
 
     init(canvasId) { this.initialize(canvasId); }
@@ -58,14 +62,11 @@ export class GameEngine {
         this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
         this.updateCameraPosition();
 
-        // ★修正: WebGLRenderer初期化の堅牢化 (フォールバック処理)
         try {
-            // まず標準/高画質設定で試行 (powerPreferenceは指定せずブラウザに任せる)
             this.renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
         } catch (e) {
             console.warn("[GameEngine] WebGL Init failed with high settings, retrying with lower settings...", e);
             try {
-                // 失敗した場合、低負荷設定で再試行
                 this.renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: false, powerPreference: "low-power" });
             } catch (e2) {
                 console.error("[GameEngine] Critical: WebGL Init failed completely.", e2);
@@ -105,7 +106,7 @@ export class GameEngine {
         window.addEventListener('resize', this._onResize, false);
 
         this.animate();
-        console.log("[GameEngine] Initialized (Robust Mode).");
+        console.log("[GameEngine] Initialized (Robust Mode + Perf Monitor).");
     }
 
     startGame(logicRef, id, name, x, y, z, speed, colorHex, isVisible) {
@@ -189,6 +190,9 @@ export class GameEngine {
         this.animationFrameId = requestAnimationFrame(() => this.animate());
         const delta = this.clock.getDelta();
 
+        // ■ NBLM Fix: Performance Throttling
+        this.updatePerformanceMonitor(delta);
+
         if (this.inputManager) this.inputManager.update();
 
         this.updateLocalPlayer(delta);
@@ -197,6 +201,23 @@ export class GameEngine {
         if (this.visualEntityManager) this.visualEntityManager.animate(delta);
         if (this.minimapManager) this.minimapManager.update();
         if (this.renderer && this.scene && this.camera) this.renderer.render(this.scene, this.camera);
+    }
+
+    updatePerformanceMonitor(delta) {
+        this.frameCount++;
+        this.timeAccumulator += delta;
+        if (this.timeAccumulator >= 1.0) {
+            const currentFps = this.frameCount / this.timeAccumulator;
+            
+            // 処理落ち検知: 24FPS未満 かつ 接続数が5人以上の場合
+            // 低スペック端末の保護のため、これ以上の接続を拒否する
+            if (currentFps < 24 && window.networkManager && window.networkManager.getPeerCount() > 5) {
+                 console.warn(`[Performance] FPS dropped to ${currentFps.toFixed(1)}. Capping peers.`);
+                 window.networkManager.capPeerCount();
+            }
+            this.frameCount = 0;
+            this.timeAccumulator = 0;
+        }
     }
 
     updateLocalPlayer(delta) {
