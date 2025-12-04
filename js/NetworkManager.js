@@ -372,6 +372,16 @@ export class NetworkManager {
         };
     }
 
+    // ★追加: 接続中のピア数を返す
+    getPeerCount() {
+        // DataChannelが開いているピアのみカウント
+        let count = 0;
+        for (const id in this.dataChannels) {
+            if (this.dataChannels[id].readyState === 'open') count++;
+        }
+        return count;
+    }
+
     // --- P2P Asset Swarm Implementation ---
 
     requestAsset(hash) {

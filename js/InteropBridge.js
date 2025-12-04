@@ -26,6 +26,8 @@ export class InteropBridge {
         window.NetworkInterop = {
             addSignalingUrl: (url) => { if (window.networkManager) window.networkManager.addSignalingUrl(url); },
             setForceLocal: (enabled) => { if (window.networkManager) window.networkManager.setForceLocal(enabled); },
+            // ★追加: ピア数取得
+            getPeerCount: () => { return window.networkManager ? window.networkManager.getPeerCount() : 0; },
             restart: () => { 
                 console.warn("Restart requested via Interop.");
                 if(window.restart) window.restart("Requested by System");
@@ -42,7 +44,7 @@ export class InteropBridge {
                     this.gameEngine.terrainManager.loadChunk(gx, gz, heightMap);
                 }
             },
-            // ★追加: アンロード用のブリッジ関数
+            // アンロード用のブリッジ関数
             unloadChunk: (gx, gz) => {
                 if (this.gameEngine && this.gameEngine.terrainManager) {
                     this.gameEngine.terrainManager.unloadChunk(gx, gz);
@@ -51,7 +53,7 @@ export class InteropBridge {
         };
 
         window.VisualEntityInterop = {
-            // ★修正: 引数リストを拡張 (Scale, Rotations, Attributes)
+            // 引数リストを拡張 (Scale, Rotations, Attributes)
             updateEntity: (id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed, modelType, modelDataId, primitiveType, scale, rx, ry, rz, attrs) => {
                 if (this.gameEngine && this.gameEngine.visualEntityManager) {
                     this.gameEngine.visualEntityManager.updateEntity(
