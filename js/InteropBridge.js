@@ -41,6 +41,12 @@ export class InteropBridge {
                 if (this.gameEngine && this.gameEngine.terrainManager) {
                     this.gameEngine.terrainManager.loadChunk(gx, gz, heightMap);
                 }
+            },
+            // ★追加: アンロード用のブリッジ関数
+            unloadChunk: (gx, gz) => {
+                if (this.gameEngine && this.gameEngine.terrainManager) {
+                    this.gameEngine.terrainManager.unloadChunk(gx, gz);
+                }
             }
         };
 

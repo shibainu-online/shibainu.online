@@ -134,19 +134,35 @@ export class NetworkManager {
         }
     }
 
+    // ■ NBLM Fix: 接続ロジックの最適化
+    // 接続に失敗したサーバーをリストの末尾に移動させる
     async findSignalingServerWithRetry() {
         this.retryCount = 0;
+        
+        // リトライ回数分ループ（最大20回）
         while (this.retryCount < this.maxRetries && this.isActive) {
             if (this.forceLocal) return null;
 
-            const url = this.signalingUrls[this.retryCount % this.signalingUrls.length];
+            // リストの先頭（最高優先度）を取得
+            const url = this.signalingUrls[0];
+            
             try {
+                // タイムアウト付きでPing
                 const controller = new AbortController();
                 const id = setTimeout(() => controller.abort(), 3000);
                 const res = await fetch(`${url}?room=ping`, { method: 'GET', signal: controller.signal });
                 clearTimeout(id);
-                if (res.ok) return url;
-            } catch (e) { }
+                
+                if (res.ok) {
+                    // 成功: このURLを採用し、リスト順序は維持する（優先度キープ）
+                    return url;
+                }
+            } catch (e) { 
+                // 失敗
+            }
+
+            // 失敗した場合: このURLをリストの末尾に回す（優先度ダウン）
+            this.signalingUrls.push(this.signalingUrls.shift());
 
             this.retryCount++;
             await new Promise(r => setTimeout(r, 500));
