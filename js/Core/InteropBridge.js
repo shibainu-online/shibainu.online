@@ -1,3 +1,4 @@
+﻿import { Utils } from '../Utils/Utils.js';
 export class InteropBridge {
     constructor(gameEngine) {
         this.gameEngine = gameEngine;
@@ -5,10 +6,8 @@ export class InteropBridge {
         this.setupCryptoInterop();
         this.setupClipboardInterop();
     }
-
     setupExports() {
         window.initNetwork = (ref, networkId, config) => {
-            // ★追加: ネットワークIDをアセットマネージャーにも伝達し、DBを切り替える
             if (window.assetManager) {
                 window.assetManager.setNetworkId(networkId);
             }
@@ -16,33 +15,28 @@ export class InteropBridge {
                 window.networkManager.init(ref, networkId, config);
             }
         };
-
         window.StartGame = (logicRef, id, name, x, y, z, speed, colorHex, isVisible) => {
             if (this.gameEngine) {
                 this.gameEngine.startGame(logicRef, id, name, x, y, z, speed, colorHex, isVisible);
             }
         };
-        
         window.DisposeGame = () => {
             if (this.gameEngine) {
                 this.gameEngine.dispose();
             }
         };
-
         window.NetworkInterop = {
             addSignalingUrl: (url) => { if (window.networkManager) window.networkManager.addSignalingUrl(url); },
             setForceLocal: (enabled) => { if (window.networkManager) window.networkManager.setForceLocal(enabled); },
             getPeerCount: () => { return window.networkManager ? window.networkManager.getPeerCount() : 0; },
-            restart: () => { 
+            restart: () => {
                 console.warn("Restart requested via Interop.");
                 if(window.restart) window.restart("Requested by System");
             }
         };
-
         window.broadcastMessage = (m) => {
             if (window.networkManager) window.networkManager.broadcast(m);
         };
-
         window.TerrainInterop = {
             loadChunk: (gx, gz, heightMap) => {
                 if (this.gameEngine && this.gameEngine.terrainManager) {
@@ -55,12 +49,11 @@ export class InteropBridge {
                 }
             }
         };
-
         window.VisualEntityInterop = {
             updateEntity: (id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed, modelType, modelDataId, primitiveType, scale, rx, ry, rz, attrs) => {
                 if (this.gameEngine && this.gameEngine.visualEntityManager) {
                     this.gameEngine.visualEntityManager.updateEntity(
-                        id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed, 
+                        id, x, y, z, colorHex, name, type, rot, isVisible, moveSpeed,
                         modelType, modelDataId, primitiveType, scale, rx, ry, rz, attrs
                     );
                 }
@@ -71,28 +64,22 @@ export class InteropBridge {
                 }
             }
         };
-
         window.renderBox = (hex) => {
             if(this.gameEngine && this.gameEngine.renderBox) this.gameEngine.renderBox(hex);
         };
-        
         window.SetPlayerSpeed = (speed) => {
             if (this.gameEngine) this.gameEngine.setPlayerSpeed(speed);
         };
-        
         window.WarpLocalPlayer = (x, y, z) => {
             if (this.gameEngine) this.gameEngine.warpLocalPlayer(x, y, z);
         };
-        
         window.StartPlacementMode = (id) => {
             if (this.gameEngine) this.gameEngine.startPlacementMode(id);
         };
-        
         window.EndPlacementMode = () => {
             if (this.gameEngine) return this.gameEngine.endPlacementMode();
             return null;
         };
-
         window.ToggleMinimap = () => {
             if (this.gameEngine && this.gameEngine.minimapManager) return this.gameEngine.minimapManager.toggle();
             return false;
@@ -100,12 +87,17 @@ export class InteropBridge {
         window.ToggleNamePlates = () => {
             if (this.gameEngine && this.gameEngine.visualEntityManager) return this.gameEngine.visualEntityManager.toggleNamePlates();
         };
+        // --- Inventory Interop ---
+        window.SyncInventory = (itemsJson) => {
+            if (this.gameEngine && this.gameEngine.inventoryManager) {
+                this.gameEngine.inventoryManager.syncItems(itemsJson);
+            }
+        };
     }
-
     setupCryptoInterop() {
         window.CryptoInterop = {
             generateKeys: async () => {
-                const keyPair = await window.crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+                const keyPair = await window.crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array(), hash: "SHA-256" }, true, ["sign", "verify"]);
                 const priv = await window.crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
                 const pub = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
                 return { privateKey: this.toPem(priv, "PRIVATE KEY"), publicKey: this.toPem(pub, "PUBLIC KEY") };
@@ -127,7 +119,7 @@ export class InteropBridge {
                     const key = await window.crypto.subtle.importKey("pkcs8", privBuf, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
                     const enc = new TextEncoder();
                     const signature = await window.crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, enc.encode(data));
-                    return this.arrayBufferToBase64(signature);
+                    return Utils.arrayBufferToBase64(signature);
                 } catch (e) { return ""; }
             },
             verifyData: async (data, signatureBase64, pubPem) => {
@@ -135,7 +127,7 @@ export class InteropBridge {
                     const pubBuf = this.pemToBuffer(pubPem);
                     const key = await window.crypto.subtle.importKey("spki", pubBuf, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
                     const enc = new TextEncoder();
-                    const sigBuf = this.base64ToArrayBuffer(signatureBase64);
+                    const sigBuf = Utils.base64ToArrayBuffer(signatureBase64);
                     return await window.crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, sigBuf, enc.encode(data));
                 } catch (e) { return false; }
             },
@@ -148,15 +140,16 @@ export class InteropBridge {
                     const encrypted = await window.crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, enc.encode(plainText));
                     const combined = new Uint8Array(salt.byteLength + iv.byteLength + encrypted.byteLength);
                     combined.set(salt, 0); combined.set(iv, salt.byteLength); combined.set(new Uint8Array(encrypted), salt.byteLength + iv.byteLength);
-                    return this.arrayBufferToBase64(combined.buffer);
+                    return Utils.arrayBufferToBase64(combined.buffer);
                 } catch (e) { return ""; }
             },
             aesDecrypt: async (encryptedBase64, password) => {
                 try {
-                    const combined = this.base64ToArrayBuffer(encryptedBase64);
-                    const salt = combined.slice(0, 16);
-                    const iv = combined.slice(16, 28);
-                    const data = combined.slice(28);
+                    const combined = Utils.base64ToArrayBuffer(encryptedBase64);
+                    const combinedArr = new Uint8Array(combined);
+                    const salt = combinedArr.slice(0, 16);
+                    const iv = combinedArr.slice(16, 28);
+                    const data = combinedArr.slice(28);
                     const key = await this.deriveKey(password, salt);
                     const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, data);
                     return new TextDecoder().decode(decrypted);
@@ -164,21 +157,16 @@ export class InteropBridge {
             }
         };
     }
-
     setupClipboardInterop() {
         window.ClipboardInterop = {
             copyText: (text) => { navigator.clipboard.writeText(text).catch(err => {}); }
         };
     }
-
     async deriveKey(password, salt) {
         const enc = new TextEncoder();
         const keyMaterial = await window.crypto.subtle.importKey("raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]);
         return window.crypto.subtle.deriveKey({ name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
     }
-
-    toPem(buffer, label) { const b64 = this.arrayBufferToBase64(buffer); return `-----BEGIN ${label}-----\n${b64}\n-----END ${label}-----`; }
-    pemToBuffer(pem) { const b64 = pem.replace(/-----BEGIN [^-]+-----/, '').replace(/-----END [^-]+-----/, '').replace(/\s/g, ''); return this.base64ToArrayBuffer(b64); }
-    arrayBufferToBase64(buffer) { let binary = ''; const bytes = new Uint8Array(buffer); for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]); return window.btoa(binary); }
-    base64ToArrayBuffer(base64) { const binary_string = window.atob(base64); const len = binary_string.length; const bytes = new Uint8Array(len); for (let i = 0; i < len; i++) bytes[i] = binary_string.charCodeAt(i); return bytes.buffer; }
+    toPem(buffer, label) { const b64 = Utils.arrayBufferToBase64(buffer); return `-----BEGIN ${label}-----\n${b64}\n-----END ${label}-----`; }
+    pemToBuffer(pem) { const b64 = pem.replace(/-----BEGIN [^-]+-----/, '').replace(/-----END [^-]+-----/, '').replace(/\s/g, ''); return Utils.base64ToArrayBuffer(b64); }
 }

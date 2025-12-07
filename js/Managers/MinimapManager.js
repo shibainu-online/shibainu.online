@@ -1,8 +1,7 @@
-export class MinimapManager {
+﻿export class MinimapManager {
     constructor(gameEngine) {
         this.gameEngine = gameEngine;
         this.isVisible = false;
-        
         this.container = document.createElement('div');
         this.container.id = 'minimap-container';
         this.container.style.position = 'fixed';
@@ -13,7 +12,6 @@ export class MinimapManager {
         this.container.style.zIndex = '1000';
         this.container.style.display = 'none';
         document.body.appendChild(this.container);
-
         this.canvas = document.createElement('canvas');
         this.canvas.id = 'minimap';
         this.canvas.width = 200;
@@ -23,79 +21,66 @@ export class MinimapManager {
         this.canvas.style.borderRadius = '50%';
         this.canvas.style.background = 'rgba(0,0,0,0.5)';
         this.container.appendChild(this.canvas);
-
         this.frame = document.createElement('img');
         this.frame.src = 'assets/minimap_frame.png';
         this.frame.style.position = 'absolute';
-        
-        this.frame.style.top = '-20px';  
-        this.frame.style.left = '-22px'; 
-        this.frame.style.width = '240px'; 
+        this.frame.style.top = '-20px';
+        this.frame.style.left = '-22px';
+        this.frame.style.width = '240px';
         this.frame.style.height = '240px';
-        
         this.frame.style.pointerEvents = 'none';
         this.frame.style.zIndex = '1001';
-        this.container.appendChild(this.frame);
-
-        this.ctx = this.canvas.getContext('2d');
-        this.range = 32 * 1.5; 
-        this.playerPos = { x:0, y:0, z:0 };
         
-        // 移動方向計算用の履歴変数
+        // --- Operation "Collar Adjust" (Right 15deg) ---
+        this.frame.style.transform = 'rotate(15deg)'; 
+        
+        this.container.appendChild(this.frame);
+        this.ctx = this.canvas.getContext('2d');
+        this.range = 32 * 1.5;
+        this.playerPos = { x:0, y:0, z:0 };
         this.lastPx = 0;
         this.lastPz = 0;
         this.lastRot = 0;
     }
-
     show() {
         this.isVisible = true;
         this.container.style.display = 'block';
     }
-
     toggle() {
         this.isVisible = !this.isVisible;
         this.container.style.display = this.isVisible ? 'block' : 'none';
         return this.isVisible;
     }
-
     update() {
         if (!this.isVisible) return;
         if (!this.gameEngine.visualEntityManager) return;
-
         const ctx = this.ctx;
         const w = this.canvas.width;
         const h = this.canvas.height;
         const radius = w / 2;
-
         ctx.clearRect(0, 0, w, h);
-
+        
         ctx.save();
         ctx.beginPath();
         ctx.arc(radius, radius, radius, 0, Math.PI * 2);
         ctx.clip();
-        
         ctx.fillStyle = 'rgba(30, 30, 30, 0.8)';
         ctx.fillRect(0, 0, w, h);
-
         const entities = this.gameEngine.visualEntityManager.entities;
         const px = this.playerPos.x;
         const pz = this.playerPos.z;
-
         for (const id in entities) {
-            const mesh = entities[id];
+            const mesh = entities[ id ];
             if (!mesh.visible) continue;
-
             const dx = mesh.position.x - px;
             const dz = mesh.position.z - pz;
+            
             const scale = radius / this.range;
             const mx = radius + dx * scale;
             const my = radius + dz * scale;
-
             if (Math.sqrt(Math.pow(mx - radius, 2) + Math.pow(my - radius, 2)) > radius) continue;
-
             let color = '#CCCCCC';
             if (mesh.userData && mesh.userData.colorHex) color = mesh.userData.colorHex;
-            
             ctx.fillStyle = color;
             ctx.beginPath();
             ctx.arc(mx, my, 4, 0, Math.PI * 2);
@@ -104,28 +89,19 @@ export class MinimapManager {
             ctx.lineWidth = 1;
             ctx.stroke();
         }
-
-        // --- プレイヤーの向き計算 (座標差分ベース) ---
-        // モデルの回転(mesh.rotation)はビルボードで上書きされるため使用しない
         const dx = px - this.lastPx;
         const dz = pz - this.lastPz;
         const distSq = dx * dx + dz * dz;
-
-        // 一定以上移動していれば向きを更新
         if (distSq > 0.0001) {
-            // atan2(dx, -dz) で Canvas座標系(0=上, CW) に合わせた角度を算出
-            // -dz: 3DのZ増加(手前)はCanvasのY増加(下)に対応するため反転
             this.lastRot = Math.atan2(dx, -dz);
             this.lastPx = px;
             this.lastPz = pz;
         }
-
         ctx.translate(radius, radius);
-        ctx.rotate(this.lastRot); 
-
+        ctx.rotate(this.lastRot);
         ctx.fillStyle = '#FF0000';
         ctx.beginPath();
-        ctx.moveTo(0, -8); // 上向きの矢印
+        ctx.moveTo(0, -8);
         ctx.lineTo(6, 5);
         ctx.lineTo(0, 2);
         ctx.lineTo(-6, 5);
@@ -134,7 +110,6 @@ export class MinimapManager {
         ctx.strokeStyle = 'white';
         ctx.lineWidth = 1;
         ctx.stroke();
-
         ctx.restore();
     }
 }

@@ -35,10 +35,8 @@ export class NetworkManager {
         
         this.activeRequests = {};
 
-        // Phase 9.7: Dynamic Connection Throttling
         this.maxPeers = 50; 
 
-        // Phase 10: Bad Peer Tracker
         this.badPeerStrikes = {};
     }
 
@@ -192,7 +190,6 @@ export class NetworkManager {
 
     setForceLocal(enabled) { this.forceLocal = enabled; }
 
-    // SenderIDが必要なため、引数を拡張
     onDataReceived(data, senderId) {
         if (data.startsWith("CMD_ASSET_")) {
             this.handleAssetMessage(data, senderId);
@@ -233,7 +230,6 @@ export class NetworkManager {
 
     setupBroadcastChannel() {
         this.broadcastChannel = new BroadcastChannel(`game_mesh_${this.networkId}`);
-        // BroadcastChannelにはsenderIdの概念がないので仮ID
         this.broadcastChannel.onmessage = (e) => this.onDataReceived(e.data, "LOCAL_TAB");
     }
 
@@ -345,7 +341,6 @@ export class NetworkManager {
     async connectToPeer(peerId, isInitiator, offerSdp = null) {
         if (this.peers[peerId]) return;
         
-        // Ban Check
         if (this.badPeerStrikes[peerId] && this.badPeerStrikes[peerId] > 3) {
             console.warn(`[Network] Ignoring banned peer: ${peerId}`);
             return;
@@ -400,8 +395,6 @@ export class NetworkManager {
         return count;
     }
 
-    // --- P2P Asset Swarm (Updated Phase 10) ---
-
     requestAsset(hash) {
         if (!window.assetManager) return;
         if (this.activeRequests[hash] && (Date.now() - this.activeRequests[hash].timestamp < 5000)) return;
@@ -415,7 +408,6 @@ export class NetworkManager {
         const cmd = parts[0];
         const hash = parts[1];
 
-        // 1. マニフェスト要求 (持ってる？)
         if (cmd === "CMD_ASSET_REQ_MANIFEST") {
             if (window.assetManager) {
                 const meta = await window.assetManager.getAssetMetadata(hash);
@@ -424,7 +416,6 @@ export class NetworkManager {
                 }
             }
         }
-        // 2. マニフェスト応答 (持ってるよ、N個あるよ)
         else if (cmd === "CMD_ASSET_MANIFEST_RESP") {
             const count = parseInt(parts[2]);
             if (!window.assetManager) return;
@@ -433,7 +424,6 @@ export class NetworkManager {
                 this.startDownloadingChunks(hash, count);
             }
         }
-        // 3. チャンク要求 (N番目の欠片をくれ)
         else if (cmd === "CMD_ASSET_REQ_CHUNK") {
             const index = parseInt(parts[2]);
             if (window.assetManager) {
@@ -443,22 +433,18 @@ export class NetworkManager {
                 }
             }
         }
-        // 4. チャンク受信 (これが欠片だ)
         else if (cmd === "CMD_ASSET_CHUNK_DATA") {
             const index = parseInt(parts[2]);
             const total = parseInt(parts[3]);
             const data = parts[4];
             if (window.assetManager) {
-                // Phase 10: Integrity verification result check
                 const result = await window.assetManager.receiveChunk(hash, index, total, data);
                 
                 if (result.status === 'corrupted') {
                     console.warn(`[Swarm] Received corrupted asset ${hash} from ${senderId}. Sending Alert.`);
                     
-                    // お節介アラート送信
                     this.sendToPeer(senderId, `CMD_ASSET_INTEGRITY_ALERT:${hash}`);
                     
-                    // 悪質ピアのストライクカウント増加
                     if (!this.badPeerStrikes[senderId]) this.badPeerStrikes[senderId] = 0;
                     this.badPeerStrikes[senderId]++;
                     
@@ -469,11 +455,9 @@ export class NetworkManager {
                 }
             }
         }
-        // Phase 10: 相互健全化アラート受信 (お前のデータ腐ってるぞ)
         else if (cmd === "CMD_ASSET_INTEGRITY_ALERT") {
             console.warn(`[Swarm] Received integrity alert for ${hash}. Verifying local data...`);
             if (window.assetManager) {
-                // 自己検診を実行
                 await window.assetManager.verifyLocalAsset(hash);
             }
         }
@@ -493,8 +477,6 @@ export class NetworkManager {
         if (this.dataChannels[peerId] && this.dataChannels[peerId].readyState === 'open') {
             this.dataChannels[peerId].send(msg);
         } else {
-            // P2Pがない場合はブロードキャストで代用（非効率だが到達はする）
-            // ただし大量のデータは送らないように注意
             if (!msg.startsWith("CMD_ASSET_CHUNK_DATA")) {
                 this.broadcast(msg);
             }

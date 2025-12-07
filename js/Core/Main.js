@@ -1,11 +1,10 @@
 import { GameEngine } from './GameEngine.js';
-import { NetworkManager } from './NetworkManager.js';
+import { NetworkManager } from '../Managers/NetworkManager.js';
 import { InteropBridge } from './InteropBridge.js';
 import './NetworkInterop.js';
-// ★追加: AssetManagerを読み込み、window.assetManager を有効化する
-import './AssetManager.js';
+import '../Managers/AssetManager.js';
 
-console.log("[Main] Loading Main.js (Genesis Fix / External Server / RenderBox Fix / Interop Update / AssetManager)");
+console.log("[Main] Loading Main.js (Structure Refactored)");
 
 // Initialize Global Managers
 window.gameEngine = new GameEngine();

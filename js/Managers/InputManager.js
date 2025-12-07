@@ -18,7 +18,6 @@ export class InputManager {
         
         this.moveSpeed = 300; 
 
-        // イベントハンドラをバインドして保持（removeEventListener用）
         this._onMouseDown = this.onMouseDown.bind(this);
         this._onMouseMove = this.onMouseMove.bind(this);
         this._onMouseUp = this.onMouseUp.bind(this);
@@ -45,7 +44,6 @@ export class InputManager {
         window.addEventListener('mousemove', this._onMouseMove);
         window.addEventListener('mouseup', this._onMouseUp);
         
-        // モバイル対応（パッシブ無効化が必要）
         this.canvas.addEventListener('touchstart', this._onTouchStart, { passive: false });
         this.canvas.addEventListener('touchmove', this._onTouchMove, { passive: false });
         window.addEventListener('touchend', this._onTouchEnd);
@@ -55,7 +53,6 @@ export class InputManager {
     }
 
     dispose() {
-        // イベントリスナーの完全解除
         this.canvas.removeEventListener('mousedown', this._onMouseDown);
         window.removeEventListener('mousemove', this._onMouseMove);
         window.removeEventListener('mouseup', this._onMouseUp);
@@ -69,8 +66,6 @@ export class InputManager {
         
         console.log("[InputManager] Disposed and event listeners removed.");
     }
-
-    // --- Event Handlers ---
 
     onMouseDown(e) {
         if (!this.isActive) return;
@@ -86,7 +81,7 @@ export class InputManager {
 
     onMouseUp() {
         this.isMouseDown = false;
-        this.targetPos = null; // 即停止
+        this.targetPos = null; 
     }
 
     onTouchStart(e) {
@@ -111,8 +106,6 @@ export class InputManager {
         this.isMouseDown = false;
         this.targetPos = null;
     }
-
-    // --- Logic ---
 
     updateMousePos(x, y) {
         this.mouseX = x;

@@ -2,7 +2,8 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <!-- 修正: モバイル向けviewport設定の適正化 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>ShibainuOnline</title>
     <style>
         body {
@@ -123,7 +124,7 @@
     <canvas id="renderCanvas"></canvas>
 
     <script src="_framework/blazor.webassembly.js"></script>
-    <script type="module" src="js/Main.js"></script>
-    <script type="module" src="js/TitleManager.js"></script>
+    <script type="module" src="js/Core/Main.js"></script>
+    <script type="module" src="js/Core/TitleManager.js"></script>
 </body>
 </html>
