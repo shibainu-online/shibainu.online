@@ -20,9 +20,9 @@ export class VisualEntityManager {
         // LRU Cache System
         this.modelCache = {}; // Hash -> GLTF Scene
         this.modelCacheLRU = []; // List of hashes
-        this.MAX_CACHE_SIZE = 50; 
+        this.MAX_CACHE_SIZE = 50;
         // Pending Lists (Garbage Collection Required)
-        this.loadingAssets = {}; 
+        this.loadingAssets = {};
         this.pendingModelApplies = {}; // Hash -> List of { entity, attrs, timestamp }
         this.pendingSourceWaits = {}; // Hash -> List of { metaHash, metadata, timestamp }
         this.loadingIconInfo = null;
@@ -40,7 +40,6 @@ export class VisualEntityManager {
                 const list = this.pendingModelApplies[hash];
                 // Filter out stale requests
                 this.pendingModelApplies[hash] = list.filter(item => (now - item.timestamp) < TIMEOUT);
-                
                 if (this.pendingModelApplies[hash].length === 0) {
                     delete this.pendingModelApplies[hash];
                     // Also clear loading status if no one is waiting
@@ -51,7 +50,6 @@ export class VisualEntityManager {
             Object.keys(this.pendingSourceWaits).forEach(hash => {
                 const list = this.pendingSourceWaits[hash];
                 this.pendingSourceWaits[hash] = list.filter(item => (now - item.timestamp) < TIMEOUT);
-                
                 if (this.pendingSourceWaits[hash].length === 0) {
                     delete this.pendingSourceWaits[hash];
                 }
@@ -79,8 +77,8 @@ export class VisualEntityManager {
         }
     }
     setLocalPlayerId(id) { this.localPlayerId = id; }
-    updateEntity(id, x, y, z, colorHex, name, type, rotationY = 0, isVisible = true, moveSpeed = 300, 
-                 modelType = "", modelDataId = "", primitiveType = "", 
+    updateEntity(id, x, y, z, colorHex, name, type, rotationY = 0, isVisible = true, moveSpeed = 300,
+                 modelType = "", modelDataId = "", primitiveType = "",
                  scale = 1.0, rx = 0, ry = 0, rz = 0, attrs = {}) {
         
         let visibleState = isVisible;
@@ -102,6 +100,7 @@ export class VisualEntityManager {
         if (id !== this.localPlayerId) {
             if (!mesh.userData.targetPos) mesh.userData.targetPos = new THREE.Vector3();
             mesh.userData.targetPos.set(x, y, z);
+            
             const isStatic = (type === "Item" || (attrs && attrs.IsStatic === "true"));
             mesh.userData.snapToGround = !isStatic;
             if (!mesh.userData.isBillboard) {
@@ -111,6 +110,7 @@ export class VisualEntityManager {
             mesh.visible = true;
         }
         if (id !== this.localPlayerId) mesh.visible = visibleState;
+        
         mesh.scale.set(scale, scale, scale);
         if (colorHex !== mesh.userData.colorHex) {
             mesh.userData.colorHex = colorHex;
@@ -134,12 +134,11 @@ export class VisualEntityManager {
     _createBaseMesh(id, x, y, z, colorHex, name, type, primitiveType) {
         const group = new THREE.Group();
         group.position.set(x, y, z);
-        
         const label = this._createLabel(name);
         group.add(label);
-        group.userData = { 
-            id: id, 
-            currentModelId: "", 
+        group.userData = {
+            id: id,
+            currentModelId: "",
             colorHex: colorHex,
             isBillboard: false,
             primitiveType: primitiveType || "Cube",
@@ -167,8 +166,8 @@ export class VisualEntityManager {
         else if (isBillboard) geometry = new THREE.PlaneGeometry(0.8, 0.8);
         else if (primitiveType === "Sphere") geometry = new THREE.SphereGeometry(type === "Item" ? 0.3 : 0.5, 16, 16);
         else geometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
-        const material = new THREE.MeshBasicMaterial({ 
-            color: this._hexToInt(colorHex), 
+        const material = new THREE.MeshBasicMaterial({
+            color: this._hexToInt(colorHex),
             side: THREE.DoubleSide,
             transparent: true,
             alphaTest: 0.5
@@ -222,6 +221,7 @@ export class VisualEntityManager {
             uvs.setXY(i, atlasU, atlasV);
         }
         uvs.needsUpdate = true;
+        
         prim.material.map = texture;
         prim.material.needsUpdate = true;
     }
@@ -353,12 +353,12 @@ export class VisualEntityManager {
             const blob = new Blob([bytes.buffer], { type: 'model/gltf-binary' });
             const url = URL.createObjectURL(blob);
             const gltf = await this.gltfLoader.loadAsync(url);
-            
             if (metadata.scaleCorrection) {
                 gltf.scene.userData.scaleCorrection = metadata.scaleCorrection;
             }
             this._addToCache(hash, gltf.scene);
             URL.revokeObjectURL(url);
+            
             this._flushPending(hash, "GLB");
         } catch(e) {
             console.error(`[Visual] Failed GLB ${hash}:`, e);
@@ -374,8 +374,7 @@ export class VisualEntityManager {
         }
     }
     _addToCache(hash, sceneCloneable) {
-        if (this.modelCache[ hash ]) return; 
-        
+        if (this.modelCache[ hash ]) return;
         if (this.modelCacheLRU.length >= this.MAX_CACHE_SIZE) {
             const oldestHash = this.modelCacheLRU.shift();
             this._disposeCacheItem(oldestHash);
@@ -395,7 +394,6 @@ export class VisualEntityManager {
         if (!this.modelCache[ hash ]) return;
         const model = this.modelCache[ hash ].clone();
         model.name = "ModelContent";
-        
         const box = new THREE.Box3().setFromObject(model);
         const size = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z);
@@ -403,16 +401,13 @@ export class VisualEntityManager {
         if (maxDim > 0) {
             scale = 1.5 / maxDim;
         }
-        
         if (model.userData.scaleCorrection) {
             scale *= model.userData.scaleCorrection;
         }
         model.scale.set(scale, scale, scale);
         model.position.y = -0.5;
-        
         entityGroup.add(model);
         entityGroup.userData.isBillboard = false;
-        
         const prim = entityGroup.getObjectByName("Primitive");
         if (prim) prim.visible = false;
     }
@@ -452,7 +447,7 @@ export class VisualEntityManager {
         }
         uvs.needsUpdate = true;
         let material = new THREE.MeshBasicMaterial({ 
-            map: texture, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide
+            map: texture, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide 
         });
         if (frames > 1) {
             const randomOffset = entityGroup.userData.animState.offset;
@@ -491,7 +486,6 @@ export class VisualEntityManager {
         mesh.position.y = 0.75;
         mesh.castShadow = false;
         entityGroup.add(mesh);
-        
         entityGroup.userData.isBillboard = true;
         const prim = entityGroup.getObjectByName("Primitive");
         if (prim) prim.visible = false;
@@ -545,6 +539,11 @@ export class VisualEntityManager {
                 this._disposeRecursively(object.children[ i ]);
             }
         }
+        // ★銀行員的修正: メモリ漏洩の元凶であるスケルトンを明示的に破棄
+        if (object.skeleton) {
+            object.skeleton.dispose();
+            object.skeleton = null;
+        }
         if (object.geometry) {
             object.geometry.dispose();
             object.geometry = null;
@@ -557,7 +556,6 @@ export class VisualEntityManager {
             }
             object.material = null;
         }
-        
         if (this.animatedMaterials && object.material) {
             const idx = this.animatedMaterials.indexOf(object.material);
             if (idx > -1) this.animatedMaterials.splice(idx, 1);
@@ -571,6 +569,7 @@ export class VisualEntityManager {
         if (material.normalMap) material.normalMap.dispose();
         if (material.specularMap) material.specularMap.dispose();
         if (material.envMap) material.envMap.dispose();
+        
         if (material.userData) material.userData.shader = null;
         material.dispose();
     }
@@ -579,24 +578,28 @@ export class VisualEntityManager {
         const ctx = canvas.getContext('2d');
         const fontSize = 24;
         ctx.font = `bold ${fontSize}px Arial`;
+        
         const textWidth = ctx.measureText(text).width + 10;
         canvas.width = textWidth;
         canvas.height = fontSize + 10;
-        
         ctx.font = `bold ${fontSize}px Arial`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
+        
         ctx.strokeStyle = "black";
         ctx.lineWidth = 4;
         ctx.strokeText(text, canvas.width / 2, canvas.height / 2);
+        
         ctx.fillStyle = "white";
         ctx.fillText(text, canvas.width / 2, canvas.height / 2);
         const texture = new THREE.CanvasTexture(canvas);
         const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
         const sprite = new THREE.Sprite(spriteMaterial);
+        
         sprite.position.y = 1.5;
         sprite.scale.set(canvas.width / 40, canvas.height / 40, 1);
         sprite.visible = this.showNamePlates;
+        
         return sprite;
     }
     toggleNamePlates() {
@@ -630,7 +633,6 @@ export class VisualEntityManager {
                         const moveDist = visualSpeed * delta;
                         const dir = new THREE.Vector3().subVectors(target, group.position).normalize();
                         group.position.add(dir.multiplyScalar(Math.min(dist, moveDist)));
-                        
                         if (group.userData.snapToGround && this.terrainManager) {
                             const groundH = this.terrainManager.getHeightAt(group.position.x, group.position.z);
                             if (groundH !== null) group.position.y = groundH + 0.5;
@@ -642,6 +644,7 @@ export class VisualEntityManager {
                     }
                 }
             }
+            
             if (group.userData.isBillboard) {
                 group.quaternion.copy(this.camera.quaternion);
             }
@@ -654,6 +657,7 @@ export class VisualEntityManager {
             this.scene.remove(this.entities[ id ]);
         }
         this.entities = {};
+        
         for (const hash in this.modelCache) {
             this._disposeRecursively(this.modelCache[ hash ]);
         }
