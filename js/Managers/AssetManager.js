@@ -11,7 +11,6 @@ export class AssetManager {
             this._initResolver = resolve;
         });
         this.CHUNK_SIZE = 1024 * 16;
-        
         // ★銀行員的修正: DoS攻撃対策 (Allocation Cap)
         // 50MB limit: 50 * 1024 * 1024 / 16384 = 3200 chunks
         this.MAX_CHUNKS = 3200;
@@ -42,9 +41,7 @@ export class AssetManager {
     async setNetworkId(networkId) {
         const safeId = networkId.replace(/[^a-zA-Z0-9_-]/g, "");
         const newDbName = `${this.baseDbName}_${safeId}`;
-        
         if (this.currentDbName === newDbName && this.db) return;
-        
         if (this.db) {
             this.db.close();
             this.db = null;
@@ -198,7 +195,6 @@ export class AssetManager {
                 if (!result) { resolve(null); return; }
                 let data = result.content || result;
                 const start = index * this.CHUNK_SIZE;
-                
                 if (data instanceof Blob) {
                     const end = Math.min(start + this.CHUNK_SIZE, data.size);
                     const chunkBlob = data.slice(start, end);
@@ -218,6 +214,11 @@ export class AssetManager {
             console.error(`[AssetManager] Rejected oversize asset (${total} chunks > ${this.MAX_CHUNKS})`);
             return { status: 'rejected_oversize' };
         }
+        // ★銀行員的修正: 配列インデックス攻撃防御 (Sparse Array Attack)
+        if (index < 0 || index >= total) {
+            console.error(`[AssetManager] Invalid chunk index ${index} (Total: ${total}). Possible attack.`);
+            return { status: 'error' };
+        }
         if (!this.tempChunks[hash]) {
             this.tempChunks[hash] = {
                 receivedCount: 0,
@@ -227,12 +228,11 @@ export class AssetManager {
             };
         }
         const entry = this.tempChunks[hash];
-        
         // 攻撃対策: 途中でtotalを変えてくる攻撃を防ぐ
         if (entry.totalChunks !== total) {
-             console.error(`[AssetManager] Inconsistent total chunks for ${hash}. Dropping.`);
-             delete this.tempChunks[hash];
-             return { status: 'error' };
+            console.error(`[AssetManager] Inconsistent total chunks for ${hash}. Dropping.`);
+            delete this.tempChunks[hash];
+            return { status: 'error' };
         }
         if (entry.parts[index] === null) {
             entry.parts[index] = Utils.base64ToUint8Array(base64Data);

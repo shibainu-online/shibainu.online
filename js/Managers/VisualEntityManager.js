@@ -19,15 +19,44 @@ export class VisualEntityManager {
         // --- Mission: Operation "Damn" (Memory Defense) ---
         // LRU Cache System
         this.modelCache = {}; // Hash -> GLTF Scene
-        this.modelCacheLRU = []; // List of hashes (Most recently used at the end)
-        this.MAX_CACHE_SIZE = 50; // Cache Cap
-        this.loadingAssets = {};
-        this.pendingModelApplies = {};
-        this.pendingSourceWaits = {};
+        this.modelCacheLRU = []; // List of hashes
+        this.MAX_CACHE_SIZE = 50; 
+        // Pending Lists (Garbage Collection Required)
+        this.loadingAssets = {}; 
+        this.pendingModelApplies = {}; // Hash -> List of { entity, attrs, timestamp }
+        this.pendingSourceWaits = {}; // Hash -> List of { metaHash, metadata, timestamp }
         this.loadingIconInfo = null;
         this.loadLoadingIcon();
-        
         this.clock = new THREE.Clock();
+        this.startGarbageCollector();
+    }
+    startGarbageCollector() {
+        // Run every 10 seconds
+        setInterval(() => {
+            const now = Date.now();
+            const TIMEOUT = 60000; // 1 minute timeout for pending requests
+            // 1. Pending Model Applies
+            Object.keys(this.pendingModelApplies).forEach(hash => {
+                const list = this.pendingModelApplies[hash];
+                // Filter out stale requests
+                this.pendingModelApplies[hash] = list.filter(item => (now - item.timestamp) < TIMEOUT);
+                
+                if (this.pendingModelApplies[hash].length === 0) {
+                    delete this.pendingModelApplies[hash];
+                    // Also clear loading status if no one is waiting
+                    if (this.loadingAssets[hash]) delete this.loadingAssets[hash];
+                }
+            });
+            // 2. Pending Source Waits
+            Object.keys(this.pendingSourceWaits).forEach(hash => {
+                const list = this.pendingSourceWaits[hash];
+                this.pendingSourceWaits[hash] = list.filter(item => (now - item.timestamp) < TIMEOUT);
+                
+                if (this.pendingSourceWaits[hash].length === 0) {
+                    delete this.pendingSourceWaits[hash];
+                }
+            });
+        }, 10000);
     }
     getMaxTextureSize() {
         try {
@@ -70,13 +99,11 @@ export class VisualEntityManager {
         }
         mesh.userData.moveSpeed = moveSpeed;
         mesh.userData.baseScale = scale || 1.0;
-        // Coordinate Authority Fix:
         if (id !== this.localPlayerId) {
             if (!mesh.userData.targetPos) mesh.userData.targetPos = new THREE.Vector3();
             mesh.userData.targetPos.set(x, y, z);
             const isStatic = (type === "Item" || (attrs && attrs.IsStatic === "true"));
             mesh.userData.snapToGround = !isStatic;
-            
             if (!mesh.userData.isBillboard) {
                 mesh.rotation.y = rotationY;
             }
@@ -84,7 +111,6 @@ export class VisualEntityManager {
             mesh.visible = true;
         }
         if (id !== this.localPlayerId) mesh.visible = visibleState;
-        
         mesh.scale.set(scale, scale, scale);
         if (colorHex !== mesh.userData.colorHex) {
             mesh.userData.colorHex = colorHex;
@@ -114,11 +140,11 @@ export class VisualEntityManager {
         group.userData = { 
             id: id, 
             currentModelId: "", 
-            colorHex: colorHex, 
+            colorHex: colorHex,
             isBillboard: false,
             primitiveType: primitiveType || "Cube",
             animState: { offset: Math.random() * 100 },
-            snapToGround: true // Default
+            snapToGround: true
         };
         this._addPrimitiveToGroup(group, primitiveType, colorHex, type);
         return group;
@@ -142,7 +168,7 @@ export class VisualEntityManager {
         else if (primitiveType === "Sphere") geometry = new THREE.SphereGeometry(type === "Item" ? 0.3 : 0.5, 16, 16);
         else geometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
         const material = new THREE.MeshBasicMaterial({ 
-            color: this._hexToInt(colorHex),
+            color: this._hexToInt(colorHex), 
             side: THREE.DoubleSide,
             transparent: true,
             alphaTest: 0.5
@@ -196,7 +222,6 @@ export class VisualEntityManager {
             uvs.setXY(i, atlasU, atlasV);
         }
         uvs.needsUpdate = true;
-        
         prim.material.map = texture;
         prim.material.needsUpdate = true;
     }
@@ -217,7 +242,7 @@ export class VisualEntityManager {
             return;
         }
         if (!this.pendingModelApplies[ hash ]) this.pendingModelApplies[ hash ] = [];
-        this.pendingModelApplies[ hash ].push({ entity: entityGroup, attrs: attrs });
+        this.pendingModelApplies[ hash ].push({ entity: entityGroup, attrs: attrs, timestamp: Date.now() });
         if (this.loadingAssets[ hash ]) return;
         this.loadingAssets[ hash ] = true;
         try {
@@ -281,7 +306,8 @@ export class VisualEntityManager {
             if (!this.pendingSourceWaits[ sourceHash ]) this.pendingSourceWaits[ sourceHash ] = [];
             this.pendingSourceWaits[ sourceHash ].push({
                 metaHash: metaHash,
-                metadata: metadata
+                metadata: metadata,
+                timestamp: Date.now()
             });
             if (window.networkManager) window.networkManager.requestAsset(sourceHash);
             return;
@@ -299,6 +325,7 @@ export class VisualEntityManager {
         if (this.pendingModelApplies[ hash ]) {
             const list = this.pendingModelApplies[ hash ];
             if (list.length > 0) {
+                // Apply to the first one (others will pick up from cache)
                 this.loadAndAttachModel(list[ 0 ].entity, hash, "UNKNOWN", list[ 0 ].attrs);
             }
         }
@@ -326,12 +353,11 @@ export class VisualEntityManager {
             const blob = new Blob([bytes.buffer], { type: 'model/gltf-binary' });
             const url = URL.createObjectURL(blob);
             const gltf = await this.gltfLoader.loadAsync(url);
+            
             if (metadata.scaleCorrection) {
                 gltf.scene.userData.scaleCorrection = metadata.scaleCorrection;
             }
-            // Cache Management (LRU)
             this._addToCache(hash, gltf.scene);
-            
             URL.revokeObjectURL(url);
             this._flushPending(hash, "GLB");
         } catch(e) {
@@ -340,7 +366,6 @@ export class VisualEntityManager {
             delete this.loadingAssets[ hash ];
         }
     }
-    // --- LRU Cache Methods ---
     _touchCache(hash) {
         const index = this.modelCacheLRU.indexOf(hash);
         if (index > -1) {
@@ -349,10 +374,10 @@ export class VisualEntityManager {
         }
     }
     _addToCache(hash, sceneCloneable) {
-        if (this.modelCache[ hash ]) return; // Already exists
-        // If cache is full, remove oldest
+        if (this.modelCache[ hash ]) return; 
+        
         if (this.modelCacheLRU.length >= this.MAX_CACHE_SIZE) {
-            const oldestHash = this.modelCacheLRU.shift(); // Get first (oldest)
+            const oldestHash = this.modelCacheLRU.shift();
             this._disposeCacheItem(oldestHash);
         }
         this.modelCache[ hash ] = sceneCloneable;
@@ -378,11 +403,13 @@ export class VisualEntityManager {
         if (maxDim > 0) {
             scale = 1.5 / maxDim;
         }
+        
         if (model.userData.scaleCorrection) {
             scale *= model.userData.scaleCorrection;
         }
         model.scale.set(scale, scale, scale);
         model.position.y = -0.5;
+        
         entityGroup.add(model);
         entityGroup.userData.isBillboard = false;
         
@@ -394,7 +421,6 @@ export class VisualEntityManager {
             const img = new Image();
             img.src = "data:image/png;base64," + base64;
             await img.decode();
-            
             const result = this.atlasManager.add(img, hash);
             if (metadata) {
                 result.meta = metadata;
@@ -426,7 +452,7 @@ export class VisualEntityManager {
         }
         uvs.needsUpdate = true;
         let material = new THREE.MeshBasicMaterial({ 
-            map: texture, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide 
+            map: texture, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide
         });
         if (frames > 1) {
             const randomOffset = entityGroup.userData.animState.offset;
@@ -514,7 +540,6 @@ export class VisualEntityManager {
     }
     _disposeRecursively(object) {
         if (!object) return;
-        
         if (object.children) {
             for (let i = object.children.length - 1; i >= 0; i--) {
                 this._disposeRecursively(object.children[ i ]);
@@ -533,27 +558,20 @@ export class VisualEntityManager {
             object.material = null;
         }
         
-        // Remove from animated list if present
         if (this.animatedMaterials && object.material) {
-             const idx = this.animatedMaterials.indexOf(object.material);
-             if (idx > -1) this.animatedMaterials.splice(idx, 1);
+            const idx = this.animatedMaterials.indexOf(object.material);
+            if (idx > -1) this.animatedMaterials.splice(idx, 1);
         }
     }
     _disposeMaterial(material) {
         if (!material) return;
-        
-        // Deep dispose textures
         if (material.map) material.map.dispose();
         if (material.lightMap) material.lightMap.dispose();
         if (material.bumpMap) material.bumpMap.dispose();
         if (material.normalMap) material.normalMap.dispose();
         if (material.specularMap) material.specularMap.dispose();
         if (material.envMap) material.envMap.dispose();
-        
-        // Remove Shader References
-        if (material.userData) {
-            material.userData.shader = null;
-        }
+        if (material.userData) material.userData.shader = null;
         material.dispose();
     }
     _createLabel(text) {
@@ -591,7 +609,6 @@ export class VisualEntityManager {
     }
     animate(delta) {
         const time = this.clock.getElapsedTime();
-        
         if (this.animatedMaterials) {
             this.animatedMaterials.forEach(mat => {
                 if (mat.userData.shader) {
@@ -602,7 +619,6 @@ export class VisualEntityManager {
         if (!this.camera) return;
         for (const id in this.entities) {
             const group = this.entities[ id ];
-            
             if (id !== this.localPlayerId) {
                 const target = group.userData.targetPos;
                 if (target) {
@@ -615,7 +631,6 @@ export class VisualEntityManager {
                         const dir = new THREE.Vector3().subVectors(target, group.position).normalize();
                         group.position.add(dir.multiplyScalar(Math.min(dist, moveDist)));
                         
-                        // Coordinate Authority Fix:
                         if (group.userData.snapToGround && this.terrainManager) {
                             const groundH = this.terrainManager.getHeightAt(group.position.x, group.position.z);
                             if (groundH !== null) group.position.y = groundH + 0.5;
@@ -634,22 +649,17 @@ export class VisualEntityManager {
     }
     dispose() {
         console.log("[Visual] Disposing VisualEntityManager...");
-        
-        // 1. Dispose all entities
         for (const id in this.entities) {
             this._disposeRecursively(this.entities[ id ]);
             this.scene.remove(this.entities[ id ]);
         }
         this.entities = {};
-        // 2. Dispose Cache
         for (const hash in this.modelCache) {
             this._disposeRecursively(this.modelCache[ hash ]);
         }
         this.modelCache = {};
         this.modelCacheLRU = [];
-        // 3. Dispose Atlas
         if (this.atlasManager) this.atlasManager.dispose();
-        
         console.log("[Visual] Disposed.");
     }
 }
