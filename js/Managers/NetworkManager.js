@@ -17,6 +17,7 @@ export class NetworkManager {
         this.currentSignalingUrl = null;
         this.lastMsgTime = 0;
 
+        // NBLM Fix: Default RTC config updated with common STUN
         this.rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
@@ -34,9 +35,7 @@ export class NetworkManager {
         this.maxRetries = 20;
         
         this.activeRequests = {};
-
         this.maxPeers = 50; 
-
         this.badPeerStrikes = {};
     }
 
@@ -75,14 +74,22 @@ export class NetworkManager {
                 if (Array.isArray(servers) && servers.length > 0) {
                     console.log(`[Network] Found ${servers.length} public TURN servers!`);
                     
+                    // Filter out existing TURNs to avoid duplication
                     const currentStuns = this.rtcConfig.iceServers.filter(s => {
                         const u = (typeof s.urls === 'string') ? s.urls : s.urls[0];
                         return !u.startsWith('turn:');
                     });
 
+                    // NBLM Fix: Ensure username/credential are attached if missing in registry data
+                    const validTurns = servers.map(s => {
+                        if (!s.username) s.username = "shibainu";
+                        if (!s.credential) s.credential = "bridge";
+                        return s;
+                    });
+
                     this.rtcConfig.iceServers = [
                         ...currentStuns,
-                        ...servers
+                        ...validTurns
                     ];
                     console.log("[Network] RTC Configuration updated with Registry TURNs.");
                 } else {
@@ -109,6 +116,7 @@ export class NetworkManager {
             return !u.startsWith('turn:');
         });
 
+        // NBLM Fix: Explicit credentials for manual TURN
         newIceServers.push({
             urls: url,
             username: 'shibainu',

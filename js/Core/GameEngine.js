@@ -29,10 +29,8 @@ export class GameEngine {
         this._tempVec3 = new THREE.Vector3();
         this.animationFrameId = null;
         this.isDisposed = false;
-        
         this.frameCount = 0;
         this.timeAccumulator = 0;
-        
         this.raycaster = new THREE.Raycaster(); // Common raycaster
     }
     init(canvasId) { this.initialize(canvasId); }
@@ -63,7 +61,6 @@ export class GameEngine {
                 return;
             }
         }
-        
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -108,6 +105,25 @@ export class GameEngine {
         }
         return null;
     }
+    // Lightweight Raycast for Grid Detection (Plane Intersection)
+    // 重いメッシュ判定を行わず、プレイヤーの高さにある平面との交差を計算のみで求めます。
+    getMapGridPosition(screenX, screenY) {
+        if (!this.camera) return null;
+        const vec = new THREE.Vector2();
+        vec.x = (screenX / window.innerWidth) * 2 - 1;
+        vec.y = -(screenY / window.innerHeight) * 2 + 1;
+        this.raycaster.setFromCamera(vec, this.camera);
+        
+        // Player's Y level approximation for the plane
+        // プレイヤーの現在のY座標を基準とした水平面を作成
+        const pY = this.logicalPos ? this.logicalPos.y : 0;
+        const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -pY);
+        const target = new THREE.Vector3();
+        
+        // 平面との交差判定（純粋な数学計算のみで超軽量）
+        const hit = this.raycaster.ray.intersectPlane(plane, target);
+        return hit; // Vector3 or null
+    }
     startGame(logicRef, id, name, x, y, z, speed, colorHex, isVisible) {
         if (this.isDisposed) return;
         this.gameLogicRef = logicRef;
@@ -122,11 +138,8 @@ export class GameEngine {
         this.logicalPos.set(Math.round(x * 2) / 2, y, Math.round(z * 2) / 2);
         this.cameraLookAt.set(x, 0, z);
         this.updateCameraPosition();
-        
         if (this.minimapManager) this.minimapManager.show();
-        if (this.inventoryManager) this.inventoryManager.show(); 
-        
-        if (this.gameLogicRef) this.gameLogicRef.invokeMethodAsync('RefreshInventoryUI');
+        if (this.inventoryManager) this.inventoryManager.show();
     }
     setPlayerSpeed(speed) {
         if (this.inputManager) {
@@ -182,7 +195,6 @@ export class GameEngine {
         if (this.inputManager) this.inputManager.update();
         this.updateLocalPlayer(delta);
         this.updateCameraFollow(delta);
-        
         if (this.visualEntityManager) this.visualEntityManager.animate(delta);
         if (this.minimapManager) this.minimapManager.update();
         if (this.renderer && this.scene && this.camera) this.renderer.render(this.scene, this.camera);
@@ -209,19 +221,14 @@ export class GameEngine {
         if (target && now >= this.nextStepTime) {
             this._tempVec2_A.set(this.logicalPos.x, this.logicalPos.z);
             this._tempVec2_B.set(target.x, target.z);
-            
             const dist2D = this._tempVec2_A.distanceTo(this._tempVec2_B);
-            
             if (dist2D >= 0.25) {
                 const dir = this._tempVec2_B.sub(this._tempVec2_A).normalize();
                 const stepSize = 0.5;
-                
                 const nextX = this.logicalPos.x + dir.x * stepSize;
                 const nextZ = this.logicalPos.z + dir.y * stepSize;
-                
                 const snappedX = Math.round(nextX * 2) / 2;
                 const snappedZ = Math.round(nextZ * 2) / 2;
-                
                 let nextY = this.logicalPos.y;
                 if (this.terrainManager) {
                     const h = this.terrainManager.getHeightAt(snappedX, snappedZ);
@@ -246,7 +253,6 @@ export class GameEngine {
         const dz = targetZ - mesh.position.z;
         const distSq = dx * dx + dz * dz;
         const dist = Math.sqrt(distSq);
-        
         if (dist > 0.001) {
             const speedParam = this.inputManager.moveSpeed || 300;
             const visualSpeed = (speedParam / 60.0);
@@ -271,7 +277,6 @@ export class GameEngine {
         } else {
             mesh.position.x = targetX;
             mesh.position.z = targetZ;
-            
             if (this.terrainManager) {
                 const groundH = this.terrainManager.getHeightAt(targetX, targetZ);
                 if (groundH !== null) mesh.position.y = groundH + 0.5;
@@ -342,7 +347,6 @@ export class GameEngine {
         }
         this.gameLogicRef = null;
         this.dotNetRef = null;
-        
         console.log("[GameEngine] Disposed.");
     }
 }

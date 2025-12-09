@@ -11,9 +11,12 @@ export class AssetManager {
             this._initResolver = resolve;
         });
         this.CHUNK_SIZE = 1024 * 16;
+        
+        // ★銀行員的修正: DoS攻撃対策 (Allocation Cap)
+        // 50MB limit: 50 * 1024 * 1024 / 16384 = 3200 chunks
+        this.MAX_CHUNKS = 3200;
         this.tempChunks = {};
         this.MAX_ITEMS = 500;
-        // --- Mission: Operation "Damn" (Memory Defense) ---
         // GC: Stale chunk cleanup (通信途絶データの定期掃除)
         this.GC_INTERVAL = 60000; // 1 min check
         this.CHUNK_TIMEOUT = 60000; // 1 min timeout
@@ -41,11 +44,11 @@ export class AssetManager {
         const newDbName = `${this.baseDbName}_${safeId}`;
         
         if (this.currentDbName === newDbName && this.db) return;
+        
         if (this.db) {
             this.db.close();
             this.db = null;
         }
-        
         this.currentDbName = newDbName;
         console.log(`[AssetManager] Switching DB to: ${this.currentDbName}`);
         await this._openDB();
@@ -93,9 +96,9 @@ export class AssetManager {
                     this.performCleanup(store);
                 }
             };
-            const record = { 
-                content: data, 
-                lastAccess: Date.now() 
+            const record = {
+                content: data,
+                lastAccess: Date.now()
             };
             const request = store.put(record, hash);
             request.onsuccess = () => resolve(true);
@@ -104,7 +107,7 @@ export class AssetManager {
     }
     performCleanup(store) {
         const index = store.index('lastAccess');
-        const cursorReq = index.openKeyCursor(); 
+        const cursorReq = index.openKeyCursor();
         cursorReq.onsuccess = (e) => {
             const cursor = e.target.result;
             if (cursor) {
@@ -125,13 +128,11 @@ export class AssetManager {
                 const result = request.result;
                 if (!result) { resolve(null); return; }
                 let content = result;
-                // Update Last Access
                 if (result.content && result.lastAccess) {
                     content = result.content;
                     result.lastAccess = Date.now();
                     store.put(result, hash);
                 } else {
-                    // Migrate legacy format
                     this.saveAsset(hash, result);
                 }
                 if (content instanceof Blob) {
@@ -212,6 +213,11 @@ export class AssetManager {
         });
     }
     async receiveChunk(hash, index, total, base64Data) {
+        // ★銀行員的修正: メモリ攻撃防御 (Allocation Cap)
+        if (total > this.MAX_CHUNKS) {
+            console.error(`[AssetManager] Rejected oversize asset (${total} chunks > ${this.MAX_CHUNKS})`);
+            return { status: 'rejected_oversize' };
+        }
         if (!this.tempChunks[hash]) {
             this.tempChunks[hash] = {
                 receivedCount: 0,
@@ -221,6 +227,13 @@ export class AssetManager {
             };
         }
         const entry = this.tempChunks[hash];
+        
+        // 攻撃対策: 途中でtotalを変えてくる攻撃を防ぐ
+        if (entry.totalChunks !== total) {
+             console.error(`[AssetManager] Inconsistent total chunks for ${hash}. Dropping.`);
+             delete this.tempChunks[hash];
+             return { status: 'error' };
+        }
         if (entry.parts[index] === null) {
             entry.parts[index] = Utils.base64ToUint8Array(base64Data);
             entry.receivedCount++;
@@ -241,7 +254,6 @@ export class AssetManager {
                 await this.saveAsset(hash, blob);
                 console.log(`[AssetManager] Asset Verified & Saved: ${hash}`);
                 delete this.tempChunks[hash];
-                
                 if (window.gameEngine && window.gameEngine.visualEntityManager) {
                     window.gameEngine.visualEntityManager.onAssetAvailable(hash);
                 }
@@ -286,14 +298,12 @@ export class AssetManager {
     async importFromInput(inputId) {
         const input = document.getElementById(inputId);
         if (!input || !input.files || input.files.length === 0) return null;
-        
         const file = input.files[ 0 ];
         try {
             const arrayBuffer = await file.arrayBuffer();
             const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
             const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-            
             await this.saveAsset(hashHex, file);
             return hashHex;
         } catch (e) {

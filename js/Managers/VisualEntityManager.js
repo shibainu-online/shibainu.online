@@ -14,6 +14,7 @@ export class VisualEntityManager {
         const maxTexSize = this.getMaxTextureSize();
         const safeAtlasSize = Math.min(4096, maxTexSize);
         console.log(`[Visual] Atlas Size: ${safeAtlasSize}px (Device Max: ${maxTexSize}px)`);
+        
         this.atlasManager = new AtlasManager(safeAtlasSize, 128);
         // --- Mission: Operation "Damn" (Memory Defense) ---
         // LRU Cache System
@@ -25,6 +26,7 @@ export class VisualEntityManager {
         this.pendingSourceWaits = {};
         this.loadingIconInfo = null;
         this.loadLoadingIcon();
+        
         this.clock = new THREE.Clock();
     }
     getMaxTextureSize() {
@@ -72,9 +74,9 @@ export class VisualEntityManager {
         if (id !== this.localPlayerId) {
             if (!mesh.userData.targetPos) mesh.userData.targetPos = new THREE.Vector3();
             mesh.userData.targetPos.set(x, y, z);
-            
             const isStatic = (type === "Item" || (attrs && attrs.IsStatic === "true"));
             mesh.userData.snapToGround = !isStatic;
+            
             if (!mesh.userData.isBillboard) {
                 mesh.rotation.y = rotationY;
             }
@@ -82,6 +84,7 @@ export class VisualEntityManager {
             mesh.visible = true;
         }
         if (id !== this.localPlayerId) mesh.visible = visibleState;
+        
         mesh.scale.set(scale, scale, scale);
         if (colorHex !== mesh.userData.colorHex) {
             mesh.userData.colorHex = colorHex;
@@ -111,7 +114,7 @@ export class VisualEntityManager {
         group.userData = { 
             id: id, 
             currentModelId: "", 
-            colorHex: colorHex,
+            colorHex: colorHex, 
             isBillboard: false,
             primitiveType: primitiveType || "Cube",
             animState: { offset: Math.random() * 100 },
@@ -139,7 +142,7 @@ export class VisualEntityManager {
         else if (primitiveType === "Sphere") geometry = new THREE.SphereGeometry(type === "Item" ? 0.3 : 0.5, 16, 16);
         else geometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
         const material = new THREE.MeshBasicMaterial({ 
-            color: this._hexToInt(colorHex), 
+            color: this._hexToInt(colorHex),
             side: THREE.DoubleSide,
             transparent: true,
             alphaTest: 0.5
@@ -160,7 +163,7 @@ export class VisualEntityManager {
         if (expectingModel && !hasModel && this.loadingIconInfo) {
             this._applyAtlasTextureToMesh(group, this.loadingIconInfo);
             prim.material.color.setHex(0xFFFFFF);
-        }
+        } 
         else if (!expectingModel) {
             if (prim.material.map === this.loadingIconInfo.texture) {
                 prim.material.map = null;
@@ -188,13 +191,12 @@ export class VisualEntityManager {
         for (let i = 0; i < uvs.count; i++) {
             const u = uvs.getX(i);
             const v = uvs.getY(i);
-            
             const atlasU = uv.x + (u * frameWidthUV);
             const atlasV = uv.y + (v * uv.h);
-            
             uvs.setXY(i, atlasU, atlasV);
         }
         uvs.needsUpdate = true;
+        
         prim.material.map = texture;
         prim.material.needsUpdate = true;
     }
@@ -277,9 +279,9 @@ export class VisualEntityManager {
         if (!sourceData) {
             console.log(`[Visual] Metadata loaded but Source ${sourceHash} missing. Requesting...`);
             if (!this.pendingSourceWaits[ sourceHash ]) this.pendingSourceWaits[ sourceHash ] = [];
-            this.pendingSourceWaits[ sourceHash ].push({ 
-                metaHash: metaHash, 
-                metadata: metadata 
+            this.pendingSourceWaits[ sourceHash ].push({
+                metaHash: metaHash,
+                metadata: metadata
             });
             if (window.networkManager) window.networkManager.requestAsset(sourceHash);
             return;
@@ -324,7 +326,6 @@ export class VisualEntityManager {
             const blob = new Blob([bytes.buffer], { type: 'model/gltf-binary' });
             const url = URL.createObjectURL(blob);
             const gltf = await this.gltfLoader.loadAsync(url);
-            
             if (metadata.scaleCorrection) {
                 gltf.scene.userData.scaleCorrection = metadata.scaleCorrection;
             }
@@ -361,8 +362,6 @@ export class VisualEntityManager {
         if (!this.modelCache[ hash ]) return;
         console.log(`[Visual] LRU Eviction: Disposing model ${hash}`);
         const scene = this.modelCache[ hash ];
-        
-        // Deep dispose
         this._disposeRecursively(scene);
         delete this.modelCache[ hash ];
     }
@@ -384,7 +383,6 @@ export class VisualEntityManager {
         }
         model.scale.set(scale, scale, scale);
         model.position.y = -0.5;
-        
         entityGroup.add(model);
         entityGroup.userData.isBillboard = false;
         
@@ -396,6 +394,7 @@ export class VisualEntityManager {
             const img = new Image();
             img.src = "data:image/png;base64," + base64;
             await img.decode();
+            
             const result = this.atlasManager.add(img, hash);
             if (metadata) {
                 result.meta = metadata;
@@ -465,10 +464,9 @@ export class VisualEntityManager {
         mesh.name = "ModelContent";
         mesh.position.y = 0.75;
         mesh.castShadow = false;
-        
         entityGroup.add(mesh);
-        entityGroup.userData.isBillboard = true;
         
+        entityGroup.userData.isBillboard = true;
         const prim = entityGroup.getObjectByName("Primitive");
         if (prim) prim.visible = false;
     }
@@ -497,8 +495,7 @@ export class VisualEntityManager {
     removeAttachedModel(entityGroup) {
         const old = entityGroup.getObjectByName("ModelContent");
         if (old) {
-            if (old.material && old.material.dispose) old.material.dispose();
-            if (old.geometry && old.geometry.dispose) old.geometry.dispose();
+            this._disposeRecursively(old);
             entityGroup.remove(old);
         }
         const prim = entityGroup.getObjectByName("Primitive");
@@ -517,20 +514,46 @@ export class VisualEntityManager {
     }
     _disposeRecursively(object) {
         if (!object) return;
+        
         if (object.children) {
             for (let i = object.children.length - 1; i >= 0; i--) {
                 this._disposeRecursively(object.children[ i ]);
             }
         }
-        if (object.geometry) object.geometry.dispose();
+        if (object.geometry) {
+            object.geometry.dispose();
+            object.geometry = null;
+        }
         if (object.material) {
-            if (Array.isArray(object.material)) object.material.forEach(mat => this._disposeMaterial(mat));
-            else this._disposeMaterial(object.material);
+            if (Array.isArray(object.material)) {
+                object.material.forEach(mat => this._disposeMaterial(mat));
+            } else {
+                this._disposeMaterial(object.material);
+            }
+            object.material = null;
+        }
+        
+        // Remove from animated list if present
+        if (this.animatedMaterials && object.material) {
+             const idx = this.animatedMaterials.indexOf(object.material);
+             if (idx > -1) this.animatedMaterials.splice(idx, 1);
         }
     }
     _disposeMaterial(material) {
         if (!material) return;
+        
+        // Deep dispose textures
         if (material.map) material.map.dispose();
+        if (material.lightMap) material.lightMap.dispose();
+        if (material.bumpMap) material.bumpMap.dispose();
+        if (material.normalMap) material.normalMap.dispose();
+        if (material.specularMap) material.specularMap.dispose();
+        if (material.envMap) material.envMap.dispose();
+        
+        // Remove Shader References
+        if (material.userData) {
+            material.userData.shader = null;
+        }
         material.dispose();
     }
     _createLabel(text) {
@@ -538,7 +561,6 @@ export class VisualEntityManager {
         const ctx = canvas.getContext('2d');
         const fontSize = 24;
         ctx.font = `bold ${fontSize}px Arial`;
-        
         const textWidth = ctx.measureText(text).width + 10;
         canvas.width = textWidth;
         canvas.height = fontSize + 10;
@@ -546,22 +568,17 @@ export class VisualEntityManager {
         ctx.font = `bold ${fontSize}px Arial`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        
         ctx.strokeStyle = "black";
         ctx.lineWidth = 4;
         ctx.strokeText(text, canvas.width / 2, canvas.height / 2);
-        
         ctx.fillStyle = "white";
         ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-        
         const texture = new THREE.CanvasTexture(canvas);
         const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
         const sprite = new THREE.Sprite(spriteMaterial);
-        
         sprite.position.y = 1.5;
         sprite.scale.set(canvas.width / 40, canvas.height / 40, 1);
         sprite.visible = this.showNamePlates;
-        
         return sprite;
     }
     toggleNamePlates() {
@@ -574,6 +591,7 @@ export class VisualEntityManager {
     }
     animate(delta) {
         const time = this.clock.getElapsedTime();
+        
         if (this.animatedMaterials) {
             this.animatedMaterials.forEach(mat => {
                 if (mat.userData.shader) {
@@ -584,6 +602,7 @@ export class VisualEntityManager {
         if (!this.camera) return;
         for (const id in this.entities) {
             const group = this.entities[ id ];
+            
             if (id !== this.localPlayerId) {
                 const target = group.userData.targetPos;
                 if (target) {
@@ -596,7 +615,7 @@ export class VisualEntityManager {
                         const dir = new THREE.Vector3().subVectors(target, group.position).normalize();
                         group.position.add(dir.multiplyScalar(Math.min(dist, moveDist)));
                         
-                        // Coordinate Authority Fix: 
+                        // Coordinate Authority Fix:
                         if (group.userData.snapToGround && this.terrainManager) {
                             const groundH = this.terrainManager.getHeightAt(group.position.x, group.position.z);
                             if (groundH !== null) group.position.y = groundH + 0.5;
@@ -615,6 +634,7 @@ export class VisualEntityManager {
     }
     dispose() {
         console.log("[Visual] Disposing VisualEntityManager...");
+        
         // 1. Dispose all entities
         for (const id in this.entities) {
             this._disposeRecursively(this.entities[ id ]);

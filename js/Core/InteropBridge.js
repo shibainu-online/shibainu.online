@@ -88,10 +88,27 @@ export class InteropBridge {
             if (this.gameEngine && this.gameEngine.visualEntityManager) return this.gameEngine.visualEntityManager.toggleNamePlates();
         };
         // --- Inventory Interop ---
-        window.SyncInventory = (itemsJson) => {
+        window.SyncInventoryRoot = (itemsJson) => {
             if (this.gameEngine && this.gameEngine.inventoryManager) {
-                this.gameEngine.inventoryManager.syncItems(itemsJson);
+                this.gameEngine.inventoryManager.syncRoot(itemsJson);
             }
+        };
+        window.OpenSubContainer = (itemsJson) => {
+            if (this.gameEngine && this.gameEngine.inventoryManager) {
+                this.gameEngine.inventoryManager.openSubContainer(itemsJson);
+            }
+        };
+        // --- Language Interop ---
+        window.SetLanguageData = (data) => {
+            window.langData = data;
+            if (this.gameEngine && this.gameEngine.inventoryManager) {
+                if(this.gameEngine.inventoryManager.updateLabels) this.gameEngine.inventoryManager.updateLabels();
+            }
+        };
+        
+        window.GetLabel = (key, defaultText) => {
+            if (window.langData && window.langData[key]) return window.langData[key];
+            return defaultText;
         };
     }
     setupCryptoInterop() {

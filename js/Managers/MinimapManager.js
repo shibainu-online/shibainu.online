@@ -11,6 +11,11 @@
         this.container.style.height = '200px';
         this.container.style.zIndex = '1000';
         this.container.style.display = 'none';
+        
+        // FIX: Prevent selection
+        this.container.style.userSelect = 'none';
+        this.container.style.webkitUserSelect = 'none';
+        
         document.body.appendChild(this.container);
         this.canvas = document.createElement('canvas');
         this.canvas.id = 'minimap';

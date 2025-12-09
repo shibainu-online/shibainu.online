@@ -2,7 +2,6 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <!-- 修正: モバイル向けviewport設定の適正化 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>ShibainuOnline</title>
     <style>
@@ -27,14 +26,16 @@
             z-index: 0;
         }
 
+        /* タイトル背景コンテナ */
         #title-screen {
             position: absolute;
             top: 0; left: 0;
             width: 100%; height: 100%;
             z-index: 1;
-            pointer-events: none;
+            pointer-events: none; /* UI操作を阻害しない */
             overflow: hidden;
             transition: opacity 1.5s ease-out;
+            background-color: #000;
         }
 
         .fullscreen-media {
@@ -45,7 +46,7 @@
             width: 100%; height: 100%;
             object-fit: cover;
             z-index: 1;
-            filter: brightness(0.65);
+            filter: brightness(0.9); /* 動画を少し明るめに */
         }
 
         #title-bg-img {
@@ -60,19 +61,19 @@
             transition: opacity 1.0s ease-in-out;
         }
 
+        /* ロゴ画像 */
         #title-logo {
             position: absolute;
-            top: 25%; 
+            top: 15%; 
             left: 50%;
             transform: translate(-50%, -50%);
             max-width: 80%;
-            width: 580px;
+            width: 600px;
             height: auto;
             z-index: 3;
             opacity: 0;
             transition: opacity 1.0s ease-out, transform 1.0s ease-out;
-            image-rendering: -webkit-optimize-contrast;
-            filter: drop-shadow(0 0 10px rgba(0,0,0,0.5));
+            filter: drop-shadow(0 0 20px rgba(255, 255, 255, 0.6));
         }
         
         #title-logo.visible {
@@ -86,11 +87,11 @@
             width: 100%; height: 100%;
             z-index: 10;
             color: white;
-            pointer-events: none;
+            pointer-events: none; /* コンテナ自体はクリックを透過 */
         }
 
         #app > * {
-            pointer-events: auto;
+            pointer-events: auto; /* 中身の要素は操作可能 */
         }
         
         .fade-out {
