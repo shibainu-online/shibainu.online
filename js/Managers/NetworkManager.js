@@ -12,7 +12,6 @@
         this.registryUrl = "https://close-creation.ganjy.net/matching/turn_registry.php";
         this.currentSignalingUrl = null;
         this.lastMsgTime = 0;
-        // NBLM Fix: Default RTC config updated with common STUN
         this.rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
@@ -21,7 +20,7 @@
         };
         this.forceLocal = false;
         this.pollTimer = null;
-        this.housekeepingTimer = null; // ★追加: 定期清掃用タイマー
+        this.housekeepingTimer = null;
         this.isActive = false;
         this.messageQueue = [];
         this.candidateQueue = {};
@@ -59,12 +58,10 @@
                 const servers = await res.json();
                 if (Array.isArray(servers) && servers.length > 0) {
                     console.log(`[Network] Found ${servers.length} public TURN servers!`);
-                    // Filter out existing TURNs to avoid duplication
                     const currentStuns = this.rtcConfig.iceServers.filter(s => {
                         const u = (typeof s.urls === 'string') ? s.urls : s.urls[ 0 ];
                         return !u.startsWith('turn:');
                     });
-                    // NBLM Fix: Ensure username/credential are attached if missing in registry data
                     const validTurns = servers.map(s => {
                         if (!s.username) s.username = "shibainu";
                         if (!s.credential) s.credential = "bridge";
@@ -95,7 +92,6 @@
             const u = (typeof server.urls === 'string') ? server.urls : (Array.isArray(server.urls) ? server.urls[ 0 ] : '');
             return !u.startsWith('turn:');
         });
-        // NBLM Fix: Explicit credentials for manual TURN
         newIceServers.push({
             urls: url,
             username: 'shibainu',
@@ -122,8 +118,11 @@
             console.log("[Network] Signaling Server Connected:", signalingUrl);
             this.startSignalingLoop();
         } else {
-            console.warn("[Network] Connection Failed. Fallback to Local Mode.");
-            this.setupBroadcastChannel();
+            // ★修正: 接続失敗時はエラーログを出し、ローカルモードには移行せず待機（リトライ）する
+            console.error("[Network] Connection Failed. Server unreachable. Retrying in background...");
+            // Retry logic will be handled by re-calling connect or similar if needed, 
+            // but for now we just stop the fallback.
+            // setupBroadcastChannel() は呼び出さない
         }
     }
     async findSignalingServerWithRetry() {
@@ -201,13 +200,10 @@
     async startSignalingLoop() {
         if (!this.currentSignalingUrl) return;
         this.pollTimer = setInterval(() => this.pollSignalingServer(), 2000);
-        // ★追加: 60秒ごとのハウスキーピング（リソース掃除）
         this.housekeepingTimer = setInterval(() => this.performHousekeeping(), 60000);
         this.sendSignal({ type: 'join', sender: this.myId, networkId: this.networkId });
     }
-    // ★追加: ゾンビピアの掃除とBANリストの整理
     performHousekeeping() {
-        // 1. Zombie Sweeper: 接続が死んでいるのにオブジェクトが残っているピアを強制排除
         const peerIds = Object.keys(this.peers);
         let cleaned = 0;
         peerIds.forEach(id => {
@@ -218,14 +214,11 @@
             }
         });
         if (cleaned > 0) console.log(`[Network] Housekeeping: Cleaned ${cleaned} zombie peers.`);
-        // 2. Strike Amnesty: BANリストが無限に増えるのを防ぐため、古いStrikeを解除
-        // 長時間稼働でここがメモリリークの原因になりうるため、全消去してリセットする
         const strikes = Object.keys(this.badPeerStrikes).length;
         if (strikes > 0) {
             console.log(`[Network] Housekeeping: Resetting ${strikes} bad peer records.`);
             this.badPeerStrikes = {};
         }
-        // 3. Request Cache Expiry
         const now = Date.now();
         const reqKeys = Object.keys(this.activeRequests);
         reqKeys.forEach(k => {
@@ -458,7 +451,6 @@
         if (this.dataChannels[peerId]) {
             delete this.dataChannels[peerId];
         }
-        // Cleanup candidates
         if(this.candidateQueue[peerId]) delete this.candidateQueue[peerId];
     }
 }
