@@ -2,6 +2,7 @@
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { AtlasManager } from './AtlasManager.js';
 import { Utils } from '../Utils/Utils.js';
+
 export class VisualEntityManager {
     constructor(scene, terrainManager, camera) {
         this.scene = scene;
@@ -11,6 +12,7 @@ export class VisualEntityManager {
         this.showNamePlates = true;
         this.localPlayerId = null;
         this.gltfLoader = new GLTFLoader();
+        
         const maxTexSize = this.getMaxTextureSize();
         const safeAtlasSize = Math.min(4096, maxTexSize);
         console.log(`[Visual] Atlas Size: ${safeAtlasSize}px (Device Max: ${maxTexSize}px)`);
@@ -24,11 +26,16 @@ export class VisualEntityManager {
         this.loadingAssets = {};
         this.pendingModelApplies = {}; 
         this.pendingSourceWaits = {}; 
+        
         this.loadingIconInfo = null;
         this.loadLoadingIcon();
+        
         this.clock = new THREE.Clock();
+        
+        // ガーベジコレクタ: タイムアウトしたリクエストを掃除
         this.startGarbageCollector();
     }
+
     startGarbageCollector() {
         setInterval(() => {
             const now = Date.now();
@@ -36,9 +43,11 @@ export class VisualEntityManager {
             
             Object.keys(this.pendingModelApplies).forEach(hash => {
                 const list = this.pendingModelApplies[hash];
+                // 1分以上待たされているリクエストは破棄
                 this.pendingModelApplies[hash] = list.filter(item => (now - item.timestamp) < TIMEOUT);
                 if (this.pendingModelApplies[hash].length === 0) {
                     delete this.pendingModelApplies[hash];
+                    // ロードフラグも解除して、再リクエスト可能な状態にする
                     if (this.loadingAssets[hash]) delete this.loadingAssets[hash];
                 }
             });
@@ -52,6 +61,7 @@ export class VisualEntityManager {
             });
         }, 10000);
     }
+
     getMaxTextureSize() {
         try {
             const canvas = document.createElement('canvas');
@@ -60,27 +70,33 @@ export class VisualEntityManager {
         } catch (e) {}
         return 4096;
     }
+
     loadLoadingIcon() {
         new THREE.ImageLoader().load('assets/loading_icon.png', (image) => {
             this.loadingIconInfo = this.atlasManager.add(image, 'system_loading_icon');
             this.applyLoadingIconToExisting();
         });
     }
+
     applyLoadingIconToExisting() {
         if (!this.loadingIconInfo) return;
         for (const id in this.entities) {
             this._applyLoadingLookToPrimitive(this.entities[ id ]);
         }
     }
+
     setLocalPlayerId(id) { this.localPlayerId = id; }
+
     updateEntity(id, x, y, z, colorHex, name, type, rotationY = 0, isVisible = true, moveSpeed = 300,
                  modelType = "", modelDataId = "", primitiveType = "",
                  scale = 1.0, rx = 0, ry = 0, rz = 0, attrs = {}) {
         
         let visibleState = isVisible;
         if (typeof isVisible === 'string') visibleState = (isVisible.toLowerCase() === 'true');
+
         let mesh = this.entities[ id ];
         if (!colorHex) colorHex = "#FFFFFF";
+
         if (!mesh) {
             mesh = this._createBaseMesh(id, x, y, z, colorHex, name, type, primitiveType);
             this.scene.add(mesh);
@@ -91,47 +107,61 @@ export class VisualEntityManager {
                 this._rebuildPrimitive(mesh, targetPrimType, colorHex, type);
             }
         }
+
         mesh.userData.moveSpeed = moveSpeed;
         mesh.userData.baseScale = scale || 1.0;
+
         if (id !== this.localPlayerId) {
             if (!mesh.userData.targetPos) mesh.userData.targetPos = new THREE.Vector3();
             mesh.userData.targetPos.set(x, y, z);
             
             const isStatic = (type === "Item" || (attrs && attrs.IsStatic === "true"));
-            mesh.userData.snapToGround = !isStatic;
+            mesh.userData.snapToGround = !isStatic; // アイテムは地面に吸着しない（浮遊などありうる）
+
             if (!mesh.userData.isBillboard) {
                 mesh.rotation.y = rotationY;
             }
         } else {
+            // 自機は常に見える
             mesh.visible = true;
         }
+
         if (id !== this.localPlayerId) mesh.visible = visibleState;
         
         mesh.scale.set(scale, scale, scale);
+
         if (colorHex !== mesh.userData.colorHex) {
             mesh.userData.colorHex = colorHex;
             this._updatePrimitiveColor(mesh, colorHex);
         }
         
+        // モデル適用処理
         if (modelDataId) {
             if (mesh.userData.currentModelId !== modelDataId) {
                 mesh.userData.currentModelId = modelDataId;
+                // まずLoading表示にする
                 this._applyLoadingLookToPrimitive(mesh);
+                // ロード開始
                 this.loadAndAttachModel(mesh, modelDataId, modelType, attrs);
             }
         } else {
+            // モデル指定が解除された場合
             if (mesh.userData.currentModelId) {
                 mesh.userData.currentModelId = "";
                 this.removeAttachedModel(mesh);
-                this._applyLoadingLookToPrimitive(mesh);
+                this._applyLoadingLookToPrimitive(mesh); // プリミティブに戻す
             }
         }
     }
+
     _createBaseMesh(id, x, y, z, colorHex, name, type, primitiveType) {
         const group = new THREE.Group();
         group.position.set(x, y, z);
+
+        // Nameplate
         const label = this._createLabel(name);
         group.add(label);
+
         group.userData = {
             id: id,
             currentModelId: "",
@@ -141,9 +171,11 @@ export class VisualEntityManager {
             animState: { offset: Math.random() * 100 },
             snapToGround: true
         };
+
         this._addPrimitiveToGroup(group, primitiveType, colorHex, type);
         return group;
     }
+
     _rebuildPrimitive(group, primitiveType, colorHex, type) {
         const oldPrim = group.getObjectByName("Primitive");
         if (oldPrim) {
@@ -154,38 +186,49 @@ export class VisualEntityManager {
         group.userData.primitiveType = primitiveType || "Cube";
         this._addPrimitiveToGroup(group, primitiveType, colorHex, type);
     }
+
     _addPrimitiveToGroup(group, primitiveType, colorHex, type) {
         let geometry;
         let isBillboard = (primitiveType === "Billboard" || primitiveType === "Plane");
+
         if (!primitiveType || primitiveType === "Cube") geometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
         else if (primitiveType === "Cylinder") geometry = new THREE.CylinderGeometry(0.4, 0.4, 1.0, 16);
         else if (isBillboard) geometry = new THREE.PlaneGeometry(0.8, 0.8);
         else if (primitiveType === "Sphere") geometry = new THREE.SphereGeometry(type === "Item" ? 0.3 : 0.5, 16, 16);
         else geometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+
         const material = new THREE.MeshBasicMaterial({
             color: this._hexToInt(colorHex),
             side: THREE.DoubleSide,
             transparent: true,
             alphaTest: 0.5
         });
+
         const primitive = new THREE.Mesh(geometry, material);
         primitive.name = "Primitive";
         primitive.position.y = isBillboard ? 0.4 : 0;
         
         group.add(primitive);
         group.userData.isBillboard = isBillboard;
+
+        // 初期状態でLoadingチェック
         this._applyLoadingLookToPrimitive(group);
     }
+
     _applyLoadingLookToPrimitive(group) {
         const prim = group.getObjectByName("Primitive");
         if (!prim) return;
+
         const expectingModel = !!group.userData.currentModelId;
         const hasModel = !!group.getObjectByName("ModelContent");
+
         if (expectingModel && !hasModel && this.loadingIconInfo) {
+            // モデル待ち状態 -> Loadingアイコンを表示
             this._applyAtlasTextureToMesh(group, this.loadingIconInfo);
-            prim.material.color.setHex(0xFFFFFF);
+            prim.material.color.setHex(0xFFFFFF); // テクスチャが見えるように白に
         } 
         else if (!expectingModel) {
+            // モデル不要 -> 元の色に戻す
             if (prim.material.map === this.loadingIconInfo.texture) {
                 prim.material.map = null;
                 prim.material.needsUpdate = true;
@@ -194,20 +237,27 @@ export class VisualEntityManager {
             prim.material.color.setHex(this._hexToInt(hex));
         }
     }
+
     _hexToInt(hex) {
         return parseInt(hex.replace('#', ''), 16);
     }
+
     _updatePrimitiveColor(mesh, hex) {
         const prim = mesh.getObjectByName("Primitive");
         if (!prim) return;
+        // Loading中は色を変えない
         this._applyLoadingLookToPrimitive(mesh);
     }
+
     _applyAtlasTextureToMesh(entityGroup, atlasInfo) {
         const prim = entityGroup.getObjectByName("Primitive");
         if (!prim) return;
+
         const geometry = prim.geometry;
         const { texture, uv, frameWidthUV } = atlasInfo;
+
         if (!geometry.attributes.uv) return;
+
         const uvs = geometry.attributes.uv;
         for (let i = 0; i < uvs.count; i++) {
             const u = uvs.getX(i);
@@ -221,9 +271,11 @@ export class VisualEntityManager {
         prim.material.map = texture;
         prim.material.needsUpdate = true;
     }
+
     async loadAndAttachModel(entityGroup, hash, hintType, attrs) {
         entityGroup.userData.currentModelId = hash;
         
+        // 1. キャッシュチェック
         if (this.modelCache[ hash ]) {
             this._touchCache(hash);
             this.attachGLBFromCache(entityGroup, hash);
@@ -237,30 +289,40 @@ export class VisualEntityManager {
             this.attachAtlasTexture(entityGroup, result, attrs, info.meta || {});
             return;
         }
+
+        // 2. ペンディングリスト登録
         if (!this.pendingModelApplies[ hash ]) this.pendingModelApplies[ hash ] = [];
         this.pendingModelApplies[ hash ].push({ entity: entityGroup, attrs: attrs, timestamp: Date.now() });
+
+        // 3. ロード中の場合は待機
         if (this.loadingAssets[ hash ]) return;
         this.loadingAssets[ hash ] = true;
+
         try {
+            // DBから取得試行
             let content = null;
             if (window.assetManager) {
                 content = await window.assetManager.loadAsset(hash);
             }
+
             if (!content) {
+                // ない場合はネットワークに要求して終了（届いたら onAssetAvailable が呼ばれる）
                 if (window.networkManager) window.networkManager.requestAsset(hash);
                 return;
             }
+
+            // ★修正ポイント: コンテンツタイプの判定強化
             let metadata = null;
             let isJson = false;
             let textContent = "";
+
             if (typeof content === 'string') {
                 try {
                     const bin = atob(content);
-                    // ★FIX: More robust JSON detection (search for sourceHash key)
+                    // 単純な { チェックだけでなく、JSONらしい特徴を探す
                     if (bin.includes('sourceHash') && bin.includes('type')) {
-                        // Extract JSON part if possible, but usually the whole file is JSON
-                        // Handle BOM or whitespace
                         let cleanBin = bin.trim();
+                        // BOM削除
                         if (cleanBin.charCodeAt(0) === 0xFEFF) cleanBin = cleanBin.slice(1);
                         
                         if (cleanBin.startsWith('{')) {
@@ -268,6 +330,7 @@ export class VisualEntityManager {
                             const bytes = new Uint8Array(len);
                             for (let i = 0; i < len; i++) bytes[ i ] = bin.charCodeAt(i);
                             textContent = new TextDecoder().decode(bytes);
+                            
                             metadata = JSON.parse(textContent);
                             isJson = true;
                         }
@@ -285,13 +348,16 @@ export class VisualEntityManager {
                     }
                 } catch(e) {}
             }
+
             if (isJson && metadata && metadata.sourceHash) {
                 console.log(`[Visual] Metadata Loaded: ${metadata.name} (${metadata.type})`);
                 await this.processMetadataFlow(hash, metadata);
             } else {
+                // JSONでなければ画像かGLBとして処理
                 if (content instanceof Blob) {
                     content = await Utils.blobToBase64(content);
                 }
+                
                 const type = this._detectTypeFromBase64(content);
                 if (type === "GLB") {
                     await this.processGlbData(hash, content, {});
@@ -299,47 +365,64 @@ export class VisualEntityManager {
                     await this.processImageData(hash, content, {});
                 } else {
                     console.warn(`[Visual] Unknown format for ${hash}. Header: ${content.substring(0, 15)}`);
+                    // 不明なデータならLoadingを解除しないとスタックする
+                    delete this.loadingAssets[ hash ];
                 }
             }
+
         } catch (e) {
             console.error(`[Visual] Load Error ${hash}:`, e);
             delete this.loadingAssets[ hash ];
         }
     }
+
     async processMetadataFlow(metaHash, metadata) {
         const sourceHash = metadata.sourceHash;
+        
+        // ソースデータの取得試行
         let sourceData = await window.assetManager.loadAsset(sourceHash);
+        
         if (!sourceData) {
             console.log(`[Visual] Metadata loaded but Source ${sourceHash} missing. Requesting...`);
+            
+            // ソース待ちリストへ
             if (!this.pendingSourceWaits[ sourceHash ]) this.pendingSourceWaits[ sourceHash ] = [];
             this.pendingSourceWaits[ sourceHash ].push({
                 metaHash: metaHash,
                 metadata: metadata,
                 timestamp: Date.now()
             });
+            
             if (window.networkManager) window.networkManager.requestAsset(sourceHash);
             return;
         }
+
         if (sourceData instanceof Blob) {
             sourceData = await Utils.blobToBase64(sourceData);
         }
+
         if (metadata.type === 'Model') {
             await this.processGlbData(metaHash, sourceData, metadata);
         } else if (metadata.type === 'Texture') {
             await this.processImageData(metaHash, sourceData, metadata);
         }
     }
+
+    // アセット受信時に呼ばれる
     async onAssetAvailable(hash) {
-        // Clear loading flag first so loadAndAttachModel doesn't exit early
+        // ロードフラグをクリアして再入可能にする
         if (this.loadingAssets[hash]) delete this.loadingAssets[hash];
 
+        // 保留中の適用処理があれば実行
         if (this.pendingModelApplies[ hash ]) {
             const list = this.pendingModelApplies[ hash ];
             if (list.length > 0) {
-                // Apply to the first one (others will pick up from cache)
+                // 先頭の1つに対して実行すれば、完了時に _flushPending で全員に適用される
                 this.loadAndAttachModel(list[ 0 ].entity, hash, "UNKNOWN", list[ 0 ].attrs);
             }
         }
+
+        // メタデータ待機中のソースであれば、フローを再開
         if (this.pendingSourceWaits[ hash ]) {
             const waits = this.pendingSourceWaits[ hash ];
             console.log(`[Visual] Source ${hash} arrived. Resuming ${waits.length} metadata flows.`);
@@ -349,12 +432,14 @@ export class VisualEntityManager {
             delete this.pendingSourceWaits[ hash ];
         }
     }
+
     _detectTypeFromBase64(base64) {
         if (base64.startsWith("gltT") || base64.startsWith("Z2x0")) return "GLB";
         if (base64.startsWith("iVBORw")) return "PNG";
         if (base64.startsWith("/9j/")) return "JPG";
         return "UNKNOWN";
     }
+
     async processGlbData(hash, base64, metadata) {
         try {
             const bin = atob(base64);
@@ -363,10 +448,13 @@ export class VisualEntityManager {
             for (let i = 0; i < len; i++) bytes[ i ] = bin.charCodeAt(i);
             const blob = new Blob([bytes.buffer], { type: 'model/gltf-binary' });
             const url = URL.createObjectURL(blob);
+            
             const gltf = await this.gltfLoader.loadAsync(url);
+            
             if (metadata.scaleCorrection) {
                 gltf.scene.userData.scaleCorrection = metadata.scaleCorrection;
             }
+            
             this._addToCache(hash, gltf.scene);
             URL.revokeObjectURL(url);
             
@@ -377,6 +465,7 @@ export class VisualEntityManager {
             delete this.loadingAssets[ hash ];
         }
     }
+
     _touchCache(hash) {
         const index = this.modelCacheLRU.indexOf(hash);
         if (index > -1) {
@@ -384,15 +473,19 @@ export class VisualEntityManager {
             this.modelCacheLRU.push(hash);
         }
     }
+
     _addToCache(hash, sceneCloneable) {
         if (this.modelCache[ hash ]) return;
+        
         if (this.modelCacheLRU.length >= this.MAX_CACHE_SIZE) {
             const oldestHash = this.modelCacheLRU.shift();
             this._disposeCacheItem(oldestHash);
         }
+        
         this.modelCache[ hash ] = sceneCloneable;
         this.modelCacheLRU.push(hash);
     }
+
     _disposeCacheItem(hash) {
         if (!this.modelCache[ hash ]) return;
         console.log(`[Visual] LRU Eviction: Disposing model ${hash}`);
@@ -400,11 +493,15 @@ export class VisualEntityManager {
         this._disposeRecursively(scene);
         delete this.modelCache[ hash ];
     }
+
     attachGLBFromCache(entityGroup, hash) {
         this.removeAttachedModel(entityGroup);
+        
         if (!this.modelCache[ hash ]) return;
+        
         const model = this.modelCache[ hash ].clone();
         model.name = "ModelContent";
+        
         const box = new THREE.Box3().setFromObject(model);
         const size = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z);
@@ -412,21 +509,27 @@ export class VisualEntityManager {
         if (maxDim > 0) {
             scale = 1.5 / maxDim;
         }
+        
         if (model.userData.scaleCorrection) {
             scale *= model.userData.scaleCorrection;
         }
+        
         model.scale.set(scale, scale, scale);
         model.position.y = -0.5;
+        
         entityGroup.add(model);
         entityGroup.userData.isBillboard = false;
+        
         const prim = entityGroup.getObjectByName("Primitive");
         if (prim) prim.visible = false;
     }
+
     async processImageData(hash, base64, metadata) {
         try {
             const img = new Image();
             img.src = "data:image/png;base64," + base64;
             await img.decode();
+            
             const result = this.atlasManager.add(img, hash);
             if (metadata) {
                 result.meta = metadata;
@@ -436,6 +539,7 @@ export class VisualEntityManager {
                     result.frameWidthUV = result.uv.w / result.frames;
                 }
             }
+            
             this._flushPending(hash, "ATLAS", result);
         } catch(e) {
             console.error(`[Visual] Failed Image ${hash}:`, e);
@@ -443,10 +547,13 @@ export class VisualEntityManager {
             delete this.loadingAssets[ hash ];
         }
     }
+
     attachAtlasTexture(entityGroup, atlasInfo, attrs, metadata = {}) {
         this.removeAttachedModel(entityGroup);
+        
         const { texture, uv, frames, frameWidthUV } = atlasInfo;
         const fps = metadata.fps || (attrs && attrs.AnimFps ? parseFloat(attrs.AnimFps) : 4.0);
+        
         const geometry = new THREE.PlaneGeometry(1.5, 1.5);
         const uvs = geometry.attributes.uv;
         for (let i = 0; i < uvs.count; i++) {
@@ -457,9 +564,11 @@ export class VisualEntityManager {
             uvs.setXY(i, atlasU, atlasV);
         }
         uvs.needsUpdate = true;
+        
         let material = new THREE.MeshBasicMaterial({ 
             map: texture, transparent: true, alphaTest: 0.5, side: THREE.DoubleSide 
         });
+
         if (frames > 1) {
             const randomOffset = entityGroup.userData.animState.offset;
             material.onBeforeCompile = (shader) => {
@@ -468,6 +577,7 @@ export class VisualEntityManager {
                 shader.uniforms.uFrameWidth = { value: frameWidthUV };
                 shader.uniforms.uFps = { value: fps };
                 shader.uniforms.uOffset = { value: randomOffset };
+                
                 shader.fragmentShader = `
                     uniform float uTime;
                     uniform float uFrames;
@@ -475,6 +585,7 @@ export class VisualEntityManager {
                     uniform float uFps;
                     uniform float uOffset;
                 ` + shader.fragmentShader;
+                
                 shader.fragmentShader = shader.fragmentShader.replace(
                     '#include <map_fragment>',
                     `
@@ -492,18 +603,23 @@ export class VisualEntityManager {
             if (!this.animatedMaterials) this.animatedMaterials = [];
             this.animatedMaterials.push(material);
         }
+
         const mesh = new THREE.Mesh(geometry, material);
         mesh.name = "ModelContent";
         mesh.position.y = 0.75;
         mesh.castShadow = false;
+        
         entityGroup.add(mesh);
         entityGroup.userData.isBillboard = true;
+        
         const prim = entityGroup.getObjectByName("Primitive");
         if (prim) prim.visible = false;
     }
+
     _flushPending(hash, type, result = null) {
         const list = this.pendingModelApplies[ hash ];
         if (!list) return;
+        
         let cachedInfo = null;
         if (type === "ATLAS" && this.atlasManager.hashCache.has(hash)) {
             const info = this.atlasManager.hashCache.get(hash);
@@ -511,6 +627,7 @@ export class VisualEntityManager {
             cachedInfo = this.atlasManager._formatResult(texture, info);
             if (result && result.meta) cachedInfo.meta = result.meta;
         }
+
         list.forEach(item => {
             if (item.entity.userData.currentModelId === hash) {
                 if (type === "GLB") {
@@ -521,8 +638,10 @@ export class VisualEntityManager {
                 }
             }
         });
+        
         delete this.pendingModelApplies[ hash ];
     }
+
     removeAttachedModel(entityGroup) {
         const old = entityGroup.getObjectByName("ModelContent");
         if (old) {
@@ -535,6 +654,7 @@ export class VisualEntityManager {
             this._applyLoadingLookToPrimitive(entityGroup);
         }
     }
+
     removeEntity(id) {
         const mesh = this.entities[ id ];
         if (mesh) {
@@ -543,13 +663,16 @@ export class VisualEntityManager {
             delete this.entities[ id ];
         }
     }
+
     _disposeRecursively(object) {
         if (!object) return;
+        
         if (object.children) {
             for (let i = object.children.length - 1; i >= 0; i--) {
                 this._disposeRecursively(object.children[ i ]);
             }
         }
+        
         if (object.skeleton) {
             object.skeleton.dispose();
             object.skeleton = null;
@@ -566,11 +689,13 @@ export class VisualEntityManager {
             }
             object.material = null;
         }
+        
         if (this.animatedMaterials && object.material) {
             const idx = this.animatedMaterials.indexOf(object.material);
             if (idx > -1) this.animatedMaterials.splice(idx, 1);
         }
     }
+
     _disposeMaterial(material) {
         if (!material) return;
         if (material.map) material.map.dispose();
@@ -583,6 +708,7 @@ export class VisualEntityManager {
         if (material.userData) material.userData.shader = null;
         material.dispose();
     }
+
     _createLabel(text) {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
@@ -602,6 +728,7 @@ export class VisualEntityManager {
         
         ctx.fillStyle = "white";
         ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+        
         const texture = new THREE.CanvasTexture(canvas);
         const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
         const sprite = new THREE.Sprite(spriteMaterial);
@@ -612,6 +739,7 @@ export class VisualEntityManager {
         
         return sprite;
     }
+
     toggleNamePlates() {
         this.showNamePlates = !this.showNamePlates;
         for (const id in this.entities) {
@@ -620,8 +748,10 @@ export class VisualEntityManager {
         }
         return this.showNamePlates;
     }
+
     animate(delta) {
         const time = this.clock.getElapsedTime();
+        
         if (this.animatedMaterials) {
             this.animatedMaterials.forEach(mat => {
                 if (mat.userData.shader) {
@@ -629,24 +759,30 @@ export class VisualEntityManager {
                 }
             });
         }
+
         if (!this.camera) return;
+
         for (const id in this.entities) {
             const group = this.entities[ id ];
+            
             if (id !== this.localPlayerId) {
                 const target = group.userData.targetPos;
                 if (target) {
                     const dist = group.position.distanceTo(target);
-                    if (dist > 10.0) group.position.copy(target);
-                    else if (dist > 0.001) {
+                    if (dist > 10.0) {
+                        group.position.copy(target);
+                    } else if (dist > 0.001) {
                         const speedParam = group.userData.moveSpeed || 300;
                         const visualSpeed = speedParam / 40.0;
                         const moveDist = visualSpeed * delta;
                         const dir = new THREE.Vector3().subVectors(target, group.position).normalize();
                         group.position.add(dir.multiplyScalar(Math.min(dist, moveDist)));
+                        
                         if (group.userData.snapToGround && this.terrainManager) {
                             const groundH = this.terrainManager.getHeightAt(group.position.x, group.position.z);
                             if (groundH !== null) group.position.y = groundH + 0.5;
                         }
+                        
                         if (!group.userData.isBillboard) {
                             const lookTarget = new THREE.Vector3(target.x, group.position.y, target.z);
                             group.lookAt(lookTarget);
@@ -660,6 +796,7 @@ export class VisualEntityManager {
             }
         }
     }
+
     dispose() {
         console.log("[Visual] Disposing VisualEntityManager...");
         for (const id in this.entities) {
@@ -673,6 +810,7 @@ export class VisualEntityManager {
         }
         this.modelCache = {};
         this.modelCacheLRU = [];
+        
         if (this.atlasManager) this.atlasManager.dispose();
         console.log("[Visual] Disposed.");
     }
