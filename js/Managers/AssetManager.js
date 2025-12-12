@@ -91,8 +91,6 @@ export class AssetManager {
         await this.initPromise;
         if (!this.db) await this._openDB();
         
-        // ★Upload to Server (Background)
-        // ローカルだけでなくサーバーにもバックアップすることで、自分が落ちても他人が取得可能にする
         this._uploadAssetToServer(hash, data);
 
         return new Promise((resolve, reject) => {
@@ -113,7 +111,6 @@ export class AssetManager {
             const request = store.put(record, hash);
             
             request.onsuccess = () => {
-                // VisualEntityManagerに通知
                 if (window.gameEngine && window.gameEngine.visualEntityManager) {
                     window.gameEngine.visualEntityManager.onAssetAvailable(hash);
                 }
@@ -123,7 +120,6 @@ export class AssetManager {
         });
     }
     
-    // ★New: Upload to Server
     async _uploadAssetToServer(hash, data) {
         try {
             let blob = data;
@@ -161,7 +157,9 @@ export class AssetManager {
 
     async loadAsset(hash) {
         await this.initPromise;
-        if (!this.db) return null;
+        // ★Fix: Ensure DB is open before trying to read
+        if (!this.db) await this._openDB(); 
+        if (!this.db) return null; // Should not happen after await _openDB
         
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readwrite');
@@ -171,7 +169,6 @@ export class AssetManager {
             request.onsuccess = async () => {
                 const result = request.result;
                 if (!result) { 
-                    // ★New: ローカルになければサーバーから取得試行
                     const fromServer = await this._downloadAssetFromServer(hash);
                     if (fromServer) {
                         resolve(fromServer); 
@@ -184,11 +181,9 @@ export class AssetManager {
                 let content = result;
                 if (result.content && result.lastAccess) {
                     content = result.content;
-                    // アクセス日時更新
                     result.lastAccess = Date.now();
                     store.put(result, hash);
                 } else {
-                    // 古い形式ならマイグレーション
                     this.saveAsset(hash, result);
                 }
 
@@ -208,7 +203,6 @@ export class AssetManager {
         });
     }
     
-    // ★New: Download from Server
     async _downloadAssetFromServer(hash) {
         try {
             const url = `${this.serverUrl}?action=get_blob&hash=${hash}&network=${this.currentNetwork}`;
@@ -216,12 +210,10 @@ export class AssetManager {
             if (res.ok) {
                 const blob = await res.blob();
                 console.log(`[AssetManager] Recovered asset from server: ${hash.substring(0,8)}...`);
-                
                 return new Promise((resolve) => {
                     const reader = new FileReader();
                     reader.onload = async () => {
                         const base64 = reader.result.split(',')[ 1 ];
-                        // 取得したデータをローカルDBに保存
                         await this.saveAsset(hash, base64); 
                         resolve(base64);
                     };
