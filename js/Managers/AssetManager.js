@@ -11,14 +11,11 @@ export class AssetManager {
             this._initResolver = resolve;
         });
         this.CHUNK_SIZE = 1024 * 16;
-        // ★銀行員的修正: DoS攻撃対策 (Allocation Cap)
-        // 50MB limit: 50 * 1024 * 1024 / 16384 = 3200 chunks
         this.MAX_CHUNKS = 3200;
         this.tempChunks = {};
         this.MAX_ITEMS = 500;
-        // GC: Stale chunk cleanup (通信途絶データの定期掃除)
-        this.GC_INTERVAL = 60000; // 1 min check
-        this.CHUNK_TIMEOUT = 60000; // 1 min timeout
+        this.GC_INTERVAL = 60000; 
+        this.CHUNK_TIMEOUT = 60000; 
         this.startGarbageCollector();
     }
     startGarbageCollector() {
@@ -86,7 +83,6 @@ export class AssetManager {
         return new Promise((resolve, reject) => {
             const transaction = this.db.transaction([this.storeName], 'readwrite');
             const store = transaction.objectStore(this.storeName);
-            // Metabolism: Check capacity before save
             const countReq = store.count();
             countReq.onsuccess = () => {
                 if (countReq.result >= this.MAX_ITEMS) {
@@ -98,7 +94,13 @@ export class AssetManager {
                 lastAccess: Date.now()
             };
             const request = store.put(record, hash);
-            request.onsuccess = () => resolve(true);
+            request.onsuccess = () => {
+                // ★FIX: Notify VisualEntityManager immediately after saving
+                if (window.gameEngine && window.gameEngine.visualEntityManager) {
+                    window.gameEngine.visualEntityManager.onAssetAvailable(hash);
+                }
+                resolve(true);
+            };
             request.onerror = () => reject(request.error);
         });
     }
@@ -110,7 +112,6 @@ export class AssetManager {
             if (cursor) {
                 console.log(`[AssetManager] Metabolism: Removing old asset ${cursor.primaryKey}`);
                 store.delete(cursor.primaryKey);
-                // Delete only one (oldest) per save to minimize lag
             }
         };
     }
@@ -209,12 +210,10 @@ export class AssetManager {
         });
     }
     async receiveChunk(hash, index, total, base64Data) {
-        // ★銀行員的修正: メモリ攻撃防御 (Allocation Cap)
         if (total > this.MAX_CHUNKS) {
             console.error(`[AssetManager] Rejected oversize asset (${total} chunks > ${this.MAX_CHUNKS})`);
             return { status: 'rejected_oversize' };
         }
-        // ★銀行員的修正: 配列インデックス攻撃防御 (Sparse Array Attack)
         if (index < 0 || index >= total) {
             console.error(`[AssetManager] Invalid chunk index ${index} (Total: ${total}). Possible attack.`);
             return { status: 'error' };
@@ -228,7 +227,6 @@ export class AssetManager {
             };
         }
         const entry = this.tempChunks[hash];
-        // 攻撃対策: 途中でtotalを変えてくる攻撃を防ぐ
         if (entry.totalChunks !== total) {
             console.error(`[AssetManager] Inconsistent total chunks for ${hash}. Dropping.`);
             delete this.tempChunks[hash];
@@ -254,9 +252,7 @@ export class AssetManager {
                 await this.saveAsset(hash, blob);
                 console.log(`[AssetManager] Asset Verified & Saved: ${hash}`);
                 delete this.tempChunks[hash];
-                if (window.gameEngine && window.gameEngine.visualEntityManager) {
-                    window.gameEngine.visualEntityManager.onAssetAvailable(hash);
-                }
+                // onAssetAvailable is now called inside saveAsset
                 return { status: 'ok' };
             } catch (e) {
                 console.error("[AssetManager] Verification Error:", e);

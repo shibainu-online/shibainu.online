@@ -1,7 +1,7 @@
 {
   "mainAssemblyName": "Game",
   "resources": {
-    "hash": "sha256-yPjVOgJRlpJO4AqaQlwiLhJKdPWuJQ9qDIeFJ7E4JYg=",
+    "hash": "sha256-qxIXFU0o1D9XDMI5MPHILrha2RoUrAkWgmBbMK4r9cE=",
     "jsModuleNative": {
       "dotnet.native.js": "sha256-vtotCeXt2UD6oc459laJT32vBgigZ+eLoUmdeFkvYDk="
     },
@@ -18,7 +18,7 @@
     },
     "coreAssembly": {},
     "assembly": {
-      "Game.wasm": "sha256-ijg6TZZvmzMl6ifV0tmlt785yVUvisHG3pltFnGdJN0=",
+      "Game.wasm": "sha256-jdRJAeFAsSHrdBOOa5m2+5LPuiWm7PPFgcPCMXxBTFM=",
       "Microsoft.AspNetCore.Components.wasm": "sha256-rixkVXEKNM6M5Wq+gWjTSuXV6nV5UNm3HKLSj4Djhc4=",
       "Microsoft.AspNetCore.Components.Web.wasm": "sha256-O+ONjbQ0o/a9Yysj/lKNK+aqw8Y3EMqcFugf0VsbPAE=",
       "Microsoft.AspNetCore.Components.WebAssembly.wasm": "sha256-Rp8J/ZOt5ir2fiX8m53leYmkSXUmLuGprtw/lxTMKoI=",
@@ -44,7 +44,7 @@
       "System.Memory.wasm": "sha256-Oq9UQBaIAhWyqvCLp+a38H24Pn8ozR+UzdtYmlnjpNs=",
       "System.Net.Http.wasm": "sha256-hLmgiwHtpDdkhyJrMvINs9ptQizfyN2NH60F1D2KJ3w=",
       "System.Net.Primitives.wasm": "sha256-qQQJFBo8rvgAI/UP5cWf04bempHFvT5eSfb8xhLv0og=",
-      "System.Private.CoreLib.wasm": "sha256-XglFVYCrOxEwMWuX5g/BITNhOZQnJgfYwkZbJx3OOuk=",
+      "System.Private.CoreLib.wasm": "sha256-pWMH+49GoelpA+s8Xc7q9d/YTFNy4DXIUYC5g8vAPBE=",
       "System.Private.Uri.wasm": "sha256-x5bZrslBoWYPOsSVQwMXeXDkpRZYlrlW6rMtnJSJhjs=",
       "System.Runtime.InteropServices.JavaScript.wasm": "sha256-obpfktlMMZRd/6+94Eqsz43u4IBXSwphEA0oRmrGRrE=",
       "System.Runtime.wasm": "sha256-imCxczk0YzJbuYy26gJp8MTBuy5nQxxoCbjrKJzo/Xk=",

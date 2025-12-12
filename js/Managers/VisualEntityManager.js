@@ -16,37 +16,33 @@ export class VisualEntityManager {
         console.log(`[Visual] Atlas Size: ${safeAtlasSize}px (Device Max: ${maxTexSize}px)`);
         
         this.atlasManager = new AtlasManager(safeAtlasSize, 128);
-        // --- Mission: Operation "Damn" (Memory Defense) ---
-        // LRU Cache System
-        this.modelCache = {}; // Hash -> GLTF Scene
-        this.modelCacheLRU = []; // List of hashes
+        
+        this.modelCache = {}; 
+        this.modelCacheLRU = []; 
         this.MAX_CACHE_SIZE = 50;
-        // Pending Lists (Garbage Collection Required)
+        
         this.loadingAssets = {};
-        this.pendingModelApplies = {}; // Hash -> List of { entity, attrs, timestamp }
-        this.pendingSourceWaits = {}; // Hash -> List of { metaHash, metadata, timestamp }
+        this.pendingModelApplies = {}; 
+        this.pendingSourceWaits = {}; 
         this.loadingIconInfo = null;
         this.loadLoadingIcon();
         this.clock = new THREE.Clock();
         this.startGarbageCollector();
     }
     startGarbageCollector() {
-        // Run every 10 seconds
         setInterval(() => {
             const now = Date.now();
-            const TIMEOUT = 60000; // 1 minute timeout for pending requests
-            // 1. Pending Model Applies
+            const TIMEOUT = 60000; 
+            
             Object.keys(this.pendingModelApplies).forEach(hash => {
                 const list = this.pendingModelApplies[hash];
-                // Filter out stale requests
                 this.pendingModelApplies[hash] = list.filter(item => (now - item.timestamp) < TIMEOUT);
                 if (this.pendingModelApplies[hash].length === 0) {
                     delete this.pendingModelApplies[hash];
-                    // Also clear loading status if no one is waiting
                     if (this.loadingAssets[hash]) delete this.loadingAssets[hash];
                 }
             });
-            // 2. Pending Source Waits
+            
             Object.keys(this.pendingSourceWaits).forEach(hash => {
                 const list = this.pendingSourceWaits[hash];
                 this.pendingSourceWaits[hash] = list.filter(item => (now - item.timestamp) < TIMEOUT);
@@ -116,7 +112,7 @@ export class VisualEntityManager {
             mesh.userData.colorHex = colorHex;
             this._updatePrimitiveColor(mesh, colorHex);
         }
-        // Model / State Handling
+        
         if (modelDataId) {
             if (mesh.userData.currentModelId !== modelDataId) {
                 mesh.userData.currentModelId = modelDataId;
@@ -227,13 +223,13 @@ export class VisualEntityManager {
     }
     async loadAndAttachModel(entityGroup, hash, hintType, attrs) {
         entityGroup.userData.currentModelId = hash;
-        // 1. Check LRU Cache
+        
         if (this.modelCache[ hash ]) {
             this._touchCache(hash);
             this.attachGLBFromCache(entityGroup, hash);
             return;
         }
-        // 2. Check Atlas Cache
+        
         if (this.atlasManager.hashCache.has(hash)) {
             const info = this.atlasManager.hashCache.get(hash);
             const texture = this.atlasManager.pages[ info.pageType ][ info.pageId ].texture;
@@ -260,15 +256,25 @@ export class VisualEntityManager {
             if (typeof content === 'string') {
                 try {
                     const bin = atob(content);
-                    if (bin.trim().startsWith('{') && bin.includes('sourceHash')) {
-                        const len = bin.length;
-                        const bytes = new Uint8Array(len);
-                        for (let i = 0; i < len; i++) bytes[ i ] = bin.charCodeAt(i);
-                        textContent = new TextDecoder().decode(bytes);
-                        metadata = JSON.parse(textContent);
-                        isJson = true;
+                    // ★FIX: More robust JSON detection (search for sourceHash key)
+                    if (bin.includes('sourceHash') && bin.includes('type')) {
+                        // Extract JSON part if possible, but usually the whole file is JSON
+                        // Handle BOM or whitespace
+                        let cleanBin = bin.trim();
+                        if (cleanBin.charCodeAt(0) === 0xFEFF) cleanBin = cleanBin.slice(1);
+                        
+                        if (cleanBin.startsWith('{')) {
+                            const len = bin.length;
+                            const bytes = new Uint8Array(len);
+                            for (let i = 0; i < len; i++) bytes[ i ] = bin.charCodeAt(i);
+                            textContent = new TextDecoder().decode(bytes);
+                            metadata = JSON.parse(textContent);
+                            isJson = true;
+                        }
                     }
-                } catch(e) {}
+                } catch(e) {
+                    console.warn(`[Visual] JSON Parse Attempt Failed for ${hash}:`, e);
+                }
             } else if (content instanceof Blob) {
                 try {
                     const text = await content.text();
@@ -291,6 +297,8 @@ export class VisualEntityManager {
                     await this.processGlbData(hash, content, {});
                 } else if (type === "PNG" || type === "JPG") {
                     await this.processImageData(hash, content, {});
+                } else {
+                    console.warn(`[Visual] Unknown format for ${hash}. Header: ${content.substring(0, 15)}`);
                 }
             }
         } catch (e) {
@@ -322,6 +330,9 @@ export class VisualEntityManager {
         }
     }
     async onAssetAvailable(hash) {
+        // Clear loading flag first so loadAndAttachModel doesn't exit early
+        if (this.loadingAssets[hash]) delete this.loadingAssets[hash];
+
         if (this.pendingModelApplies[ hash ]) {
             const list = this.pendingModelApplies[ hash ];
             if (list.length > 0) {
@@ -539,7 +550,6 @@ export class VisualEntityManager {
                 this._disposeRecursively(object.children[ i ]);
             }
         }
-        // ★銀行員的修正: メモリ漏洩の元凶であるスケルトンを明示的に破棄
         if (object.skeleton) {
             object.skeleton.dispose();
             object.skeleton = null;
